@@ -34,7 +34,7 @@ export function RuleSelector({
   );
 
   const handleNewRule = useCallback(() => {
-    // 将文件信息传给新建规则页
+    // 将文件信息传给新建规则页（带时间戳，60秒内有效）
     sessionStorage.setItem(
       "newRuleFile",
       JSON.stringify({
@@ -42,6 +42,7 @@ export function RuleSelector({
         fileType: parsedFile.fileType,
         rows: parsedFile.rows.slice(0, 100),
         sampleText: parsedFile.sampleText,
+        _timestamp: Date.now(),
       })
     );
     router.push("/rules/new");

@@ -1,321 +1,281 @@
-import type { ParsedFile, ParseRule, OrderRow, RawRow } from "@/types";
-import { generateId } from "./utils";
+import type { ParsedFile, ParseRule, OrderRow, RawRow, KvExtractConfig, KvEntry, FieldMapping } from "@/types";
 
-type Mutable<T> = T & Record<string, unknown>;
+// ====== KV 对提取 ======
+// 在一行中扫描标签，取标签右侧列的值
+function extractKvPairs(rows: RawRow[], kvConfigs: KvExtractConfig[] | undefined, dataStartRow: number, totalRows: number): Record<string, string> {
+  const result: Record<string, string> = {};
+  if (!kvConfigs) return result;
 
-export function parseFile(parsedFile: ParsedFile, rule: ParseRule): OrderRow[] {
-  const { fileType } = parsedFile;
+  for (const config of kvConfigs) {
+    for (const relRow of config.rows) {
+      // 正数: 从 dataStartRow 起偏移；负数: 从末尾倒数
+      const actualRow = relRow >= 0 ? dataStartRow + relRow : totalRows + relRow;
+      if (actualRow < 0 || actualRow >= totalRows) continue;
 
-  if (fileType === "excel") {
-    switch (rule.parseMode) {
-      case "standard": return parseStandard(parsedFile, rule);
-      case "aggregate": return parseAggregate(parsedFile, rule);
-      case "matrix": return parseMatrix(parsedFile, rule);
-      case "card": return parseCard(parsedFile, rule);
-      case "multi-sheet": return parseMultiSheet(parsedFile, rule);
-      default: return parseStandard(parsedFile, rule);
-    }
-  }
-  if (fileType === "pdf") {
-    return parsePdfStandard(parsedFile, rule);
-  }
-  return [];
-}
+      const row = rows[actualRow];
+      if (!row) continue;
 
-function setField<T extends object>(obj: T, field: string, val: unknown): void {
-  (obj as unknown as Record<string, unknown>)[field] = val;
-}
-
-function getField(obj: unknown, field: string): unknown {
-  return (obj as Record<string, unknown>)[field];
-}
-
-function applyFieldMappings(
-  cells: (string | number | null)[],
-  mappings: ParseRule["fieldMappings"],
-  item: Partial<OrderRow>
-) {
-  for (const mapping of mappings) {
-    const val = cells[mapping.fromCol - 1];
-    if (val !== null && val !== undefined && val !== "") {
-      const field = mapping.toField;
-      if (field === "skuQuantity") {
-        setField(item, field, Number(val));
-      } else {
-        setField(item, field, String(val));
-      }
-    }
-  }
-}
-
-function applyDefaults(item: Partial<OrderRow>, defaults?: ParseRule["defaults"]) {
-  if (!defaults) return;
-  for (const [key, val] of Object.entries(defaults)) {
-    if (!getField(item, key)) {
-      setField(item, key, val);
-    }
-  }
-}
-
-function makeOrder(rowIndex: number, overrides: Partial<OrderRow> = {}): OrderRow {
-  return {
-    id: generateId(), rowIndex,
-    externalCode: "", storeName: "", receiverName: "", receiverPhone: "",
-    receiverAddress: "", skuCode: "", skuName: "", skuQuantity: 0,
-    skuSpec: "", remark: "", ...overrides,
-  };
-}
-
-// ====== 模式 1: 标准解析 ======
-function parseStandard(parsedFile: ParsedFile, rule: ParseRule): OrderRow[] {
-  const rows = parsedFile.rows;
-  const excel = rule.excel;
-  const startRow = excel ? excel.dataStartRow - 1 : 0;
-  const endRow = excel ? rows.length - excel.footerRows : rows.length;
-  const skip = new Set((excel?.skipRows || []).map((r) => r - 1));
-
-  const orders: OrderRow[] = [];
-  let rowIdx = 0;
-
-  for (let i = startRow; i < endRow; i++) {
-    if (skip.has(i)) continue;
-    const cells = rows[i]?.cells || [];
-    const firstCell = cells[0]?.toString().trim() || "";
-    if (excel?.skipIfFirstColContains?.some((m) => firstCell.includes(m))) continue;
-    if (excel?.endMarker) {
-      const markerVal = cells[excel.endMarker.col - 1]?.toString().trim() || "";
-      if (markerVal.includes(excel.endMarker.val)) break;
-    }
-    const item = makeOrder(rowIdx);
-    applyFieldMappings(cells, rule.fieldMappings, item);
-    applyDefaults(item, rule.defaults);
-    if (item.skuCode || item.skuName) {
-      orders.push(item);
-      rowIdx++;
-    }
-  }
-
-  if (rule.footerExtract?.rowMappings) {
-    applyFooterExtract(rows, rows.length, rule, orders);
-  }
-  return orders;
-}
-
-function applyFooterExtract(rows: RawRow[], totalRows: number, rule: ParseRule, orders: OrderRow[]) {
-  if (!rule.footerExtract) return;
-  for (const rowMapping of rule.footerExtract.rowMappings) {
-    let targetRow: RawRow | undefined;
-    if (rule.footerExtract.extractFromEnd) {
-      targetRow = rows[totalRows + rowMapping.rowOffset];
-    } else {
-      targetRow = rows[rowMapping.rowOffset];
-    }
-    if (targetRow?.cells) {
-      for (const order of orders) {
-        applyFieldMappings(targetRow.cells, rowMapping.mappings, order);
-      }
-    }
-  }
-}
-
-// ====== 模式 2: 跨行聚合 ======
-function parseAggregate(parsedFile: ParsedFile, rule: ParseRule): OrderRow[] {
-  const rows = parsedFile.rows;
-  const excel = rule.excel;
-  const startRow = excel ? excel.dataStartRow - 1 : 0;
-  const endRow = excel ? rows.length - excel.footerRows : rows.length;
-  const skip = new Set((excel?.skipRows || []).map((r) => r - 1));
-
-  const groups = new Map<string, RawRow[]>();
-  for (let i = startRow; i < endRow; i++) {
-    if (skip.has(i)) continue;
-    const cells = rows[i]?.cells || [];
-    const firstCell = cells[0]?.toString().trim() || "";
-    if (excel?.skipIfFirstColContains?.some((m) => firstCell.includes(m))) continue;
-    const groupKeyIdx = (rule.aggregate?.groupByCol || 1) - 1;
-    const groupKey = cells[groupKeyIdx]?.toString().trim() || "";
-    if (!groupKey) continue;
-    if (!groups.has(groupKey)) groups.set(groupKey, []);
-    groups.get(groupKey)!.push(rows[i]);
-  }
-
-  const orders: OrderRow[] = [];
-  let rowIdx = 0;
-  const sharedFields = new Set(rule.aggregate?.sharedFields || []);
-
-  for (const [, groupRows] of groups) {
-    const firstRowCells = groupRows[0]?.cells || [];
-    const shared: Partial<OrderRow> = {};
-    for (const mapping of rule.fieldMappings) {
-      const val = firstRowCells[mapping.fromCol - 1];
-      if (val !== null && val !== undefined && val !== "" && sharedFields.has(mapping.toField)) {
-        setField(shared, mapping.toField, String(val));
-      }
-    }
-    for (const rawRow of groupRows) {
-      const cells = rawRow.cells;
-      const item = makeOrder(rowIdx, shared as Partial<OrderRow>);
-      for (const mapping of rule.fieldMappings) {
-        const val = cells[mapping.fromCol - 1];
-        if (val !== null && val !== undefined && val !== "") {
-          const field = mapping.toField;
-          if (field === "skuQuantity") setField(item, field, Number(val));
-          else setField(item, field, String(val));
+      for (const entry of config.entries) {
+        for (let ci = 0; ci < row.cells.length; ci++) {
+          const cellText = String(row.cells[ci] ?? "").trim();
+          // 匹配标签：忽略末尾冒号
+          if (!cellText) continue;
+          const cellClean = cellText.replace(/[：:]\s*$/, "");
+          if (cellClean === entry.label) {
+            // 取右边第一个非空列的值
+            const val = String(row.cells[ci + 1] ?? "").trim();
+            if (val) result[entry.toField] = val;
+            break; // 匹配到一个标签就跳出内层循环
+          }
         }
       }
-      applyDefaults(item, rule.defaults);
-      if (item.skuCode || item.skuName) {
-        orders.push(item);
-        rowIdx++;
+    }
+  }
+  return result;
+}
+
+// 在单行中扫描标签，从当前行和相邻行提取 KV 对（返回提取到的值）
+function scanKvOnRow(row: RawRow, entries: KvEntry[]): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const entry of entries) {
+    for (let ci = 0; ci < row.cells.length; ci++) {
+      const cellText = String(row.cells[ci] ?? "").trim();
+      if (!cellText) continue;
+      const cellClean = cellText.replace(/[：:]\s*$/, "");
+      if (cellClean === entry.label) {
+        const val = String(row.cells[ci + 1] ?? "").trim();
+        if (val) result[entry.toField] = val;
+        break;
       }
     }
   }
-  return orders;
+  return result;
 }
 
-// ====== 模式 3: 矩阵转置 ======
-function parseMatrix(parsedFile: ParsedFile, rule: ParseRule): OrderRow[] {
-  if (!rule.matrix) return [];
-  const rows = parsedFile.rows;
-  const m = rule.matrix;
-  const headerRow = rows[m.storeHeaderRow - 1];
-  if (!headerRow) return [];
+// ====== 数据区列映射 ======
+function applyFieldMappings(row: RawRow, mappings: FieldMapping[]): Record<string, string> {
+  const record: Record<string, string> = {};
+  for (const m of mappings) {
+    const val = String(row.cells[m.fromCol] ?? "").trim();
+    record[m.toField] = val;
+  }
+  return record;
+}
 
-  const startRow = rule.excel ? rule.excel.dataStartRow - 1 : m.storeHeaderRow;
-  const endRow = rule.excel ? rows.length - rule.excel.footerRows : rows.length;
-  const orders: OrderRow[] = [];
+// ====== 主解析函数 ======
+export function parseFile(file: ParsedFile, rule: ParseRule): OrderRow[] {
+  if (file.sheets && file.sheets.length > 1) {
+    // 多 Sheet 合并模式
+    return parseMultiSheet(file, rule);
+  }
+
+  return parseRows(file.rows, rule, 0);
+}
+
+// ====== 标准模式（含 aggregate/matrix/card） ======
+function parseRows(rows: RawRow[], rule: ParseRule, rowIndexOffset: number): OrderRow[] {
+  const total = rows.length;
+  if (total === 0) return [];
+
+  const mode = rule.parseMode;
+  const excel = rule.excel;
+
+  if (mode === "matrix") return parseMatrix(rows, rule, rowIndexOffset);
+  if (mode === "card") return parseCards(rows, rule, rowIndexOffset);
+  if (mode === "aggregate") return parseAggregate(rows, rule, rowIndexOffset);
+
+  // ----- standard mode -----
+  const dataStartRow = excel?.dataStartRow ?? 0;
+  const footerRows = excel?.footerRows ?? 0;
+  const headerRows = excel?.headerRows ?? 0;
+  const skipIfFirstCol = excel?.skipIfFirstColContains ?? [];
+  const skipRows = new Set(excel?.skipRows?.map((r) => r - 1) ?? []);
+
+  const result: OrderRow[] = [];
   let rowIdx = 0;
 
-  for (let col = m.storeStartCol; col <= m.storeEndCol; col++) {
-    const storeName = headerRow.cells[col - 1]?.toString().trim();
-    if (!storeName) continue;
-    for (let i = startRow; i < endRow; i++) {
-      const cells = rows[i]?.cells || [];
-      const qtyVal = cells[col - 1];
-      const qty = qtyVal !== null && qtyVal !== undefined ? Number(qtyVal) : 0;
-      if (!qty || isNaN(qty)) continue;
-      const item = makeOrder(rowIdx, { storeName, skuQuantity: qty });
-      for (const mapping of m.fixedColMappings) {
-        const val = cells[mapping.fromCol - 1];
-        if (val !== null && val !== undefined && val !== "") {
-          const field = mapping.toField;
-          if (field === "skuQuantity") setField(item, field, Number(val));
-          else setField(item, field, String(val));
-        }
-      }
-      applyDefaults(item, rule.defaults);
-      if (item.skuCode || item.skuName) {
-        orders.push(item);
-        rowIdx++;
-      }
-    }
+  // 提取 KV 对（头部或尾部元信息）
+  const kvValues = extractKvPairs(rows, rule.kvExtract, dataStartRow, total);
+
+  for (let i = dataStartRow; i < total - footerRows; i++) {
+    if (skipRows.has(i)) continue;
+
+    const row = rows[i];
+    const firstCell = String(row.cells[0] ?? "").trim();
+    if (!firstCell) continue;
+    if (skipIfFirstCol.some((s) => firstCell.includes(s))) continue;
+
+    const record = applyFieldMappings(row, rule.fieldMappings);
+
+    result.push({
+      id: crypto.randomUUID(),
+      rowIndex: rowIndexOffset + rowIdx,
+      externalCode: record["externalCode"] || rule.defaults?.["externalCode"] || kvValues["externalCode"] || "",
+      storeName: record["storeName"] || kvValues["storeName"] || rule.defaults?.["storeName"] || "",
+      receiverName: record["receiverName"] || kvValues["receiverName"] || rule.defaults?.["receiverName"] || "",
+      receiverPhone: record["receiverPhone"] || kvValues["receiverPhone"] || rule.defaults?.["receiverPhone"] || "",
+      receiverAddress: record["receiverAddress"] || kvValues["receiverAddress"] || rule.defaults?.["receiverAddress"] || "",
+      skuCode: record["skuCode"] || "",
+      skuName: record["skuName"] || "",
+      skuQuantity: Number(record["skuQuantity"]) || 0,
+      skuSpec: record["skuSpec"] || "",
+      remark: record["remark"] || "",
+    });
+    rowIdx++;
   }
-  return orders;
+
+  return result;
 }
 
-// ====== 模式 4: 卡片式解析 ======
-function parseCard(parsedFile: ParsedFile, rule: ParseRule): OrderRow[] {
-  if (!rule.card) return [];
-  const rows = parsedFile.rows;
+// ====== 矩阵转置模式 ======
+function parseMatrix(rows: RawRow[], rule: ParseRule, rowIndexOffset: number): OrderRow[] {
+  const matrix = rule.matrix;
+  if (!matrix) return [];
+
+  const storeHeaderRow = matrix.storeHeaderRow;
+  const storeStartCol = matrix.storeStartCol;
+  const storeEndCol = matrix.storeEndCol;
+
+  // 提取门店名（从表头行）
+  const headerRow = rows[storeHeaderRow];
+  const storeNames: { col: number; name: string }[] = [];
+  for (let ci = storeStartCol; ci <= storeEndCol; ci++) {
+    const name = String(headerRow?.cells[ci] ?? "").trim();
+    storeNames.push({ col: ci, name });
+  }
+
+  const result: OrderRow[] = [];
+  const kvValues = extractKvPairs(rows, rule.kvExtract, 0, rows.length);
+
+  for (let ri = storeHeaderRow + 1; ri < rows.length; ri++) {
+    const row = rows[ri];
+    const firstCell = String(row.cells[0] ?? "").trim();
+    if (!firstCell) continue;
+
+    // 提取 SKU 信息
+    const skuRecord = applyFieldMappings(row, matrix.fixedColMappings);
+
+    for (const { col, name } of storeNames) {
+      const qty = Number(row.cells[col]) || 0;
+      if (qty <= 0) continue;  // 数量为0的不生成记录
+
+      result.push({
+        id: crypto.randomUUID(),
+        rowIndex: rowIndexOffset + result.length,
+        externalCode: kvValues["externalCode"] || "",
+        storeName: name,
+        receiverName: kvValues["receiverName"] || "",
+        receiverPhone: kvValues["receiverPhone"] || "",
+        receiverAddress: kvValues["receiverAddress"] || "",
+        skuCode: skuRecord["skuCode"] || "",
+        skuName: skuRecord["skuName"] || "",
+        skuQuantity: qty,
+        skuSpec: skuRecord["skuSpec"] || "",
+        remark: skuRecord["remark"] || "",
+      });
+    }
+  }
+
+  return result;
+}
+
+// ====== 跨行聚合模式 ======
+function parseAggregate(rows: RawRow[], rule: ParseRule, rowIndexOffset: number): OrderRow[] {
+  const agg = rule.aggregate;
+  if (!agg) return parseRows(rows, rule, rowIndexOffset);
+
+  const excel = rule.excel;
+  const dataStartRow = excel?.dataStartRow ?? 0;
+  const footerRows = excel?.footerRows ?? 0;
+  const skipIfFirstCol = excel?.skipIfFirstColContains ?? [];
+
+  const result: OrderRow[] = [];
+
+  for (let i = dataStartRow; i < rows.length - footerRows; i++) {
+    const row = rows[i];
+    const firstCell = String(row.cells[0] ?? "").trim();
+    if (!firstCell) continue;
+    if (skipIfFirstCol.some((s) => firstCell.includes(s))) continue;
+
+    const record = applyFieldMappings(row, rule.fieldMappings);
+
+    result.push({
+      id: crypto.randomUUID(),
+      rowIndex: rowIndexOffset + result.length,
+      externalCode: record["externalCode"] || rule.defaults?.["externalCode"] || "",
+      storeName: record["storeName"] || rule.defaults?.["storeName"] || "",
+      receiverName: record["receiverName"] || rule.defaults?.["receiverName"] || "",
+      receiverPhone: record["receiverPhone"] || rule.defaults?.["receiverPhone"] || "",
+      receiverAddress: record["receiverAddress"] || rule.defaults?.["receiverAddress"] || "",
+      skuCode: record["skuCode"] || "",
+      skuName: record["skuName"] || "",
+      skuQuantity: Number(record["skuQuantity"]) || 0,
+      skuSpec: record["skuSpec"] || "",
+      remark: record["remark"] || "",
+    });
+  }
+
+  return result;
+}
+
+// ====== 卡片识别模式 ======
+function parseCards(rows: RawRow[], rule: ParseRule, rowIndexOffset: number): OrderRow[] {
   const card = rule.card;
-  const pattern = new RegExp(card.boundaryPattern);
+  if (!card) return [];
 
-  const cards: { startRow: number; endRow: number }[] = [];
+  const boundaryRe = new RegExp(card.boundaryPattern);
+  const result: OrderRow[] = [];
+  let currentMeta: Record<string, string> = {};
+
   for (let i = 0; i < rows.length; i++) {
-    const val = rows[i]?.cells[0]?.toString().trim() || "";
-    if (pattern.test(val)) {
-      cards.push({ startRow: i, endRow: rows.length });
-      if (cards.length > 1) cards[cards.length - 2].endRow = i - 1;
+    const row = rows[i];
+    const firstCell = String(row.cells[0] ?? "");
+    const rowText = row.cells.map((c) => String(c ?? "")).join(" ");
+
+    // 检测卡片边界
+    if (boundaryRe.test(firstCell) || boundaryRe.test(rowText)) {
+      currentMeta = {}; // 重置
+    }
+
+    // 扫描当前行是否有 KV 标签
+    const kvFound = scanKvOnRow(row, card.cardMetaMappings);
+    if (Object.keys(kvFound).length > 0) {
+      Object.assign(currentMeta, kvFound);
+    }
+
+    // 尝试按 dataFieldMappings 提取数据行
+    const dataRecord = applyFieldMappings(row, card.dataFieldMappings);
+    if (dataRecord["skuCode"] || dataRecord["skuName"]) {
+      result.push({
+        id: crypto.randomUUID(),
+        rowIndex: rowIndexOffset + result.length,
+        externalCode: currentMeta["externalCode"] || "",
+        storeName: currentMeta["storeName"] || "",
+        receiverName: currentMeta["receiverName"] || "",
+        receiverPhone: currentMeta["receiverPhone"] || "",
+        receiverAddress: currentMeta["receiverAddress"] || "",
+        skuCode: dataRecord["skuCode"] || "",
+        skuName: dataRecord["skuName"] || "",
+        skuQuantity: Number(dataRecord["skuQuantity"]) || 0,
+        skuSpec: dataRecord["skuSpec"] || "",
+        remark: dataRecord["remark"] || "",
+      });
     }
   }
 
-  const orders: OrderRow[] = [];
-  let rowIdx = 0;
-
-  for (const cardRange of cards) {
-    const headerInfo: Partial<OrderRow> = {};
-    for (const hm of card.headerRowMappings) {
-      const targetRowIdx = cardRange.startRow + hm.rowOffset;
-      const targetRow = rows[Math.min(targetRowIdx, cardRange.endRow)];
-      if (targetRow?.cells) {
-        applyFieldMappings(targetRow.cells, hm.mappings, headerInfo);
-      }
-    }
-    const dataStart = cardRange.startRow + card.dataHeaderRowOffset + 1;
-    for (let i = dataStart; i <= cardRange.endRow; i++) {
-      const cells = rows[i]?.cells || [];
-      const item = makeOrder(rowIdx, headerInfo as Partial<OrderRow>);
-      applyFieldMappings(cells, card.dataFieldMappings, item);
-      applyDefaults(item, rule.defaults);
-      if (item.skuCode || item.skuName) {
-        orders.push(item);
-        rowIdx++;
-      }
-    }
-  }
-  return orders;
+  return result;
 }
 
-// ====== 模式 5: 多Sheet合并 ======
-function parseMultiSheet(parsedFile: ParsedFile, rule: ParseRule): OrderRow[] {
-  const allOrders: OrderRow[] = [];
-  const sheets = parsedFile.sheets || [];
-  for (const sheet of sheets) {
-    const subFile: ParsedFile = { ...parsedFile, rows: sheet.rows };
-    const subRule = { ...rule, parseMode: "standard" as const };
-    const orders = parseStandard(subFile, subRule);
-    allOrders.push(...orders);
+// ====== 多 Sheet 合并模式 ======
+function parseMultiSheet(file: ParsedFile, rule: ParseRule): OrderRow[] {
+  const all: OrderRow[] = [];
+  let offset = 0;
+
+  for (const sheet of file.sheets ?? []) {
+    const sheetRows = parseRows(sheet.rows, rule, offset);
+    all.push(...sheetRows);
+    offset += sheet.rows.length;
   }
-  allOrders.forEach((o, i) => { o.rowIndex = i; });
-  return allOrders;
-}
 
-// ====== 模式 6: PDF文本解析 ======
-function parsePdfStandard(parsedFile: ParsedFile, rule: ParseRule): OrderRow[] {
-  const text = parsedFile.sampleText || parsedFile.rows.map((r) => r.cells[0] || "").join("\n");
-  const lines = text.split("\n").filter(Boolean);
-  const pdf = rule.pdf;
-  if (!pdf) return [];
-
-  let inTable = false;
-  const orders: OrderRow[] = [];
-  let rowIdx = 0;
-  let currentItem: Partial<OrderRow> = {};
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (trimmed.includes(pdf.tableStartMarker)) { inTable = true; continue; }
-    if (pdf.tableEndMarker && trimmed.includes(pdf.tableEndMarker)) { inTable = false; continue; }
-    if (pdf.footerStartMarker && trimmed.includes(pdf.footerStartMarker)) {
-      for (const order of orders) extractPdfFooterInfo(trimmed, order);
-      continue;
-    }
-    if (inTable) {
-      const cells = trimmed.split(/\s{2,}|\t/);
-      const item = makeOrder(rowIdx);
-      applyFieldMappings(cells, rule.fieldMappings, item);
-      applyDefaults(item, rule.defaults);
-      if (item.skuCode || item.skuName) {
-        Object.assign(item, currentItem);
-        orders.push(item);
-        rowIdx++;
-      }
-    } else {
-      extractPdfFooterInfo(trimmed, currentItem as OrderRow);
-    }
-  }
-  return orders;
-}
-
-function extractPdfFooterInfo(line: string, item: Partial<OrderRow>) {
-  const patterns: [RegExp, keyof OrderRow][] = [
-    [/收货人[：:]?\s*(\S+)/, "receiverName"],
-    [/电话[：:]?\s*(\d[\d-]*)/, "receiverPhone"],
-    [/地址[：:]?\s*(.+)/, "receiverAddress"],
-    [/门店[：:]?\s*(.+)/, "storeName"],
-  ];
-  for (const [regex, field] of patterns) {
-    const match = line.match(regex);
-    if (match) setField(item, field, match[1].trim());
-  }
+  return all;
 }

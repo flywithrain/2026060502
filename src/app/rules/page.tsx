@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { Plus, Edit, Copy, Trash2, Settings, Sparkles } from "lucide-react";
+import { Plus, Edit, Copy, Trash2, Settings, Sparkles, Database } from "lucide-react";
 import { getAllRules, deleteRule } from "@/lib/server-actions";
 import { useToast } from "@/components/shared/toast";
 import { EmptyState } from "@/components/shared/empty-state";
@@ -13,6 +13,7 @@ export default function RulesPage() {
   const { showToast } = useToast();
   const [rules, setRules] = useState<ParseRule[]>([]);
   const [loading, setLoading] = useState(true);
+  const [seeding, setSeeding] = useState(false);
 
   const loadRules = useCallback(async () => {
     const list = await getAllRules();
@@ -34,6 +35,25 @@ export default function RulesPage() {
     [loadRules, showToast]
   );
 
+  const handleSeed = useCallback(async () => {
+    if (!confirm("将用 6 条内置规则覆盖相同名称的已有规则，继续？")) return;
+    setSeeding(true);
+    try {
+      const res = await fetch("/api/rules/seed", { method: "POST" });
+      const data = await res.json();
+      if (data.success) {
+        showToast(`已初始化 ${data.count} 条内置规则`, "success");
+        loadRules();
+      } else {
+        showToast("初始化失败：" + data.error, "error");
+      }
+    } catch {
+      showToast("初始化失败，请检查网络", "error");
+    } finally {
+      setSeeding(false);
+    }
+  }, [loadRules, showToast]);
+
   const parseModeLabels: Record<string, string> = {
     standard: "标准表格",
     aggregate: "跨行聚合",
@@ -49,10 +69,16 @@ export default function RulesPage() {
           <h1 className="text-2xl font-bold text-[#1d2129]">解析规则管理</h1>
           <p className="mt-1 text-sm text-[#86909c]">管理所有文件解析规则，支持 AI 自动生成</p>
         </div>
-        <button onClick={() => router.push("/rules/new")} className="btn-primary gap-1.5">
-          <Plus className="h-4 w-4" />
-          新建规则
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={handleSeed} disabled={seeding} className="btn-ghost gap-1.5 text-sm">
+            <Database className="h-4 w-4" />
+            {seeding ? "初始化中..." : "初始化内置规则"}
+          </button>
+          <button onClick={() => router.push("/rules/new")} className="btn-primary gap-1.5">
+            <Plus className="h-4 w-4" />
+            新建规则
+          </button>
+        </div>
       </div>
 
       {loading ? (
@@ -83,7 +109,7 @@ export default function RulesPage() {
                   <p className="mt-1 text-sm text-[#86909c] truncate">{rule.description}</p>
                 )}
                 <p className="mt-1 text-xs text-[#86909c]">
-                  字段映射：{rule.fieldMappings.length} 个 | 更新于 {rule.updatedAt ? new Date(rule.updatedAt).toLocaleDateString("zh-CN") : "-"}
+                  字段映射：{rule.fieldMappings?.length ?? 0} 个 | 更新于 {rule.updatedAt ? new Date(rule.updatedAt).toLocaleDateString("zh-CN") : "-"}
                 </p>
               </div>
               <div className="ml-4 flex items-center gap-2">
