@@ -1,0 +1,9 @@
+{
+  "buildCommand": "next build",
+  "framework": "nextjs",
+  "installCommand": "npm install",
+  "regions": ["hkg1"],
+  "env": {
+    "DEEPSEEK_API_URL": "https://api.deepseek.com/v1/chat/completions"
+  }
+}

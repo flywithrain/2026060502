@@ -1,65 +1,192 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+import { useState, useCallback } from "react";
+import { useRouter } from "next/navigation";
+import { FileUploadZone } from "@/components/upload/file-upload-zone";
+import { RuleSelector } from "@/components/upload/rule-selector";
+import { ProgressBar } from "@/components/shared/progress-bar";
+import { useToast } from "@/components/shared/toast";
+import { readFile } from "@/lib/file-reader";
+import { parseFile } from "@/lib/parse-engine";
+import { validateOrders, checkExternalCodeDuplicates } from "@/lib/validators";
+import { getAllRules, getExistingExternalCodes } from "@/lib/server-actions";
+import type { ParsedFile, ParseRule, OrderRow, ParseProgress } from "@/types";
+import { Sparkles, FileText, ArrowRight, Database } from "lucide-react";
+
+export default function HomePage() {
+  const router = useRouter();
+  const { showToast } = useToast();
+
+  const [file, setFile] = useState<File | null>(null);
+  const [parsedFile, setParsedFile] = useState<ParsedFile | null>(null);
+  const [rules, setRules] = useState<ParseRule[]>([]);
+  const [selectedRule, setSelectedRule] = useState<ParseRule | null>(null);
+  const [progress, setProgress] = useState<ParseProgress>({
+    current: 0,
+    total: 0,
+    percent: 0,
+    status: "idle",
+  });
+  const [loading, setLoading] = useState(false);
+
+  const handleFileSelected = useCallback(async (file: File) => {
+    setFile(file);
+    setSelectedRule(null);
+    setProgress({ current: 0, total: 0, percent: 0, status: "idle" });
+
+    try {
+      setProgress({ current: 0, total: 1, percent: 10, status: "parsing" });
+      const parsed = await readFile(file);
+      setParsedFile(parsed);
+      setProgress({ current: 1, total: 1, percent: 50, status: "parsing" });
+
+      const rulesList = await getAllRules();
+      setRules(rulesList);
+      setProgress({ current: 1, total: 1, percent: 100, status: "done" });
+    } catch (err) {
+      console.error(err);
+      showToast("文件读取失败，请检查文件格式", "error");
+      setProgress({ current: 0, total: 0, percent: 0, status: "error" });
+    }
+  }, [showToast]);
+
+  const handleParseWithRule = useCallback(async (rule: ParseRule) => {
+    if (!parsedFile) return;
+    setSelectedRule(rule);
+    setLoading(true);
+    setProgress({ current: 0, total: parsedFile.rows.length, percent: 0, status: "parsing" });
+
+    // 在下一tick执行，让UI更新
+    await new Promise((r) => setTimeout(r, 50));
+
+    const startTime = performance.now();
+    const orderRows = parseFile(parsedFile, rule);
+    const duration = performance.now() - startTime;
+
+    // 校验
+    const validationErrors = validateOrders(orderRows);
+    const existingCodes = await getExistingExternalCodes().catch(() => new Set<string>());
+    const dupErrors = checkExternalCodeDuplicates(orderRows, existingCodes);
+
+    // 合并错误
+    for (const dupErr of dupErrors) {
+      const row = orderRows.find((r) => r.rowIndex === dupErr.rowIndex);
+      if (row) {
+        if (!row._errors) row._errors = [];
+        row._errors.push(dupErr);
+      }
+    }
+    for (const vErr of validationErrors) {
+      const row = orderRows.find((r) => r.rowIndex === vErr.rowIndex);
+      if (row) {
+        if (!row._errors) row._errors = [];
+        row._errors.push(vErr);
+      }
+    }
+
+    setProgress({ current: orderRows.length, total: orderRows.length, percent: 100, status: "done" });
+
+    // 存储到 sessionStorage 供预览页使用
+    sessionStorage.setItem(
+      "previewData",
+      JSON.stringify({
+        rows: orderRows,
+        errors: validationErrors,
+        fileName: parsedFile.fileName,
+        ruleName: rule.name,
+        parseDuration: Math.round(duration),
+      })
+    );
+
+    showToast(`解析完成：${orderRows.length}条记录，${validationErrors.length + dupErrors.length}处错误`, "success");
+    setLoading(false);
+
+    router.push("/preview");
+  }, [parsedFile, router, showToast]);
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <div className="mx-auto max-w-4xl px-6 py-8">
+      {/* 标题区 */}
+      <div className="mb-8 text-center">
+        <h1 className="text-2xl font-bold text-[#1d2129]">
+          <Sparkles className="mr-2 inline-block h-7 w-7 text-[#0fc6c2]" />
+          万能导入 V2
+        </h1>
+        <p className="mt-2 text-sm text-[#86909c]">智能多格式批量下单系统 —— 上传文件，AI自动解析，一键下单</p>
+      </div>
+
+      {/* 文件上传区 */}
+      <div className="card mb-6">
+        <div className="mb-4 flex items-center gap-2">
+          <FileText className="h-5 w-5 text-[#0fc6c2]" />
+          <h2 className="text-base font-semibold text-[#1d2129]">步骤一：上传文件</h2>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+        <FileUploadZone onFileSelected={handleFileSelected} disabled={loading} />
+
+        {file && progress.status === "done" && (
+          <div className="mt-3 flex items-center gap-2 rounded-md bg-[#e8fafa] px-3 py-2 text-sm text-[#0b6e6e]">
+            <FileText className="h-4 w-4" />
+            <span>{file.name}</span>
+            <span className="text-[#86909c]">({parsedFile?.rows.length} 行数据)</span>
+          </div>
+        )}
+
+        {progress.status === "parsing" && (
+          <div className="mt-3">
+            <ProgressBar percent={progress.percent} label="正在读取文件..." />
+          </div>
+        )}
+      </div>
+
+      {/* 规则选择区 */}
+      {parsedFile && (
+        <div className="card mb-6 animate-fade-in">
+          <div className="mb-4 flex items-center gap-2">
+            <Database className="h-5 w-5 text-[#0fc6c2]" />
+            <h2 className="text-base font-semibold text-[#1d2129]">步骤二：选择解析规则</h2>
+          </div>
+          <RuleSelector
+            rules={rules}
+            selectedRule={selectedRule}
+            parsedFile={parsedFile}
+            onSelectRule={handleParseWithRule}
+            loading={loading}
+          />
+
+          {loading && (
+            <div className="mt-4">
+              <ProgressBar
+                percent={progress.percent}
+                label={`正在解析... ${progress.current}/${progress.total}`}
+              />
+            </div>
+          )}
         </div>
-      </main>
+      )}
+
+      {/* 快速指引 */}
+      {!file && (
+        <div className="card">
+          <div className="mb-3 flex items-center gap-2">
+            <ArrowRight className="h-5 w-5 text-[#0fc6c2]" />
+            <h2 className="text-base font-semibold text-[#1d2129]">快速开始</h2>
+          </div>
+          <div className="grid gap-3 text-sm text-[#4e5969]">
+            <div className="flex items-start gap-3">
+              <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-[#e8fafa] text-xs font-bold text-[#0fc6c2]">1</span>
+              <span>上传任意格式的出库单文件（Excel / PDF），支持拖拽或点击上传</span>
+            </div>
+            <div className="flex items-start gap-3">
+              <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-[#e8fafa] text-xs font-bold text-[#0fc6c2]">2</span>
+              <span>选择已有解析规则，或新建规则让 AI 自动分析文件结构并生成规则</span>
+            </div>
+            <div className="flex items-start gap-3">
+              <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-[#e8fafa] text-xs font-bold text-[#0fc6c2]">3</span>
+              <span>预览解析结果，在线编辑修正数据，确认无误后一键提交下单</span>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
