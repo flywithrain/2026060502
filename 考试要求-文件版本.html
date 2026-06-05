@@ -48,11 +48,11 @@
 <div class="container">
 
 <h1>AI 考试题目：万能导入 V2</h1>
-<p class="subtitle">智能多格式批量下单系统 —— 大模型 + 钉钉预警 + 高性能</p>
+<p class="subtitle">智能多格式批量下单系统 —— 大模型 + 高性能</p>
 
 <!-- ====== 一、项目背景 ====== -->
 <h2>一、项目背景</h2>
-<p>物流/快递行业需要频繁批量下单，客户提供的文件格式各异（<strong>Excel / Word / PDF</strong>），且文档结构复杂（有干扰性头部信息、横向排列字段、合并单元格、非标准表格等）。现需开发一个 Web 应用，<strong>通过介入大模型（LLM）实现任意格式文件的智能解析与导入</strong>，完成批量下单流程，并部署到 Vercel 平台在线访问。</p>
+<p>物流/快递行业需要频繁批量下单，客户提供的文件格式各异（<strong>Excel / PDF</strong>），且文档结构复杂（有干扰性头部信息、横向排列字段、合并单元格、非标准表格等）。现需开发一个 Web 应用，<strong>通过介入大模型（LLM）实现任意格式文件的智能解析与导入</strong>，完成批量下单流程，并部署到 Vercel 平台在线访问。</p>
 
 <div class="alert alert-info">
   <strong>核心变化（相较 V1）：</strong><br>
@@ -66,8 +66,8 @@
   <tr><td>技术栈</td><td>Next.js App Router + TypeScript</td></tr>
   <tr><td>部署</td><td>Vercel，提供可访问 URL</td></tr>
   <tr><td>UI 风格</td><td>与鲸天系统（见下方参考截图）保持一致的设计语言：主色 <code>#0fc6c2</code>、圆角卡片、清爽蓝绿色调</td></tr>
-  <tr><td>大模型</td><td>通过 API 调用大模型（如 DeepSeek / GPT / Claude 等），将文件内容转为结构化下单数据</td></tr>
-  <tr><td>数据库</td><td>Neon / Supabase / Turso 等，通过 Vercel Marketplace 集成</td></tr>
+  <tr><td>大模型</td><td>通过 API 调用大模型（如 DeepSeek / Mimo等），将文件内容转为结构化下单数据</td></tr>
+  <tr><td>数据库</td><td>Neon，通过 Vercel Marketplace 集成</td></tr>
 </table>
 
 <!-- ====== 三、字段定义 ====== -->
@@ -108,9 +108,9 @@
   <li><strong>规则预览测试</strong>：保存规则前，可用当前文件作为样例进行<strong>试解析</strong>，实时预览解析结果，确认正确后再保存</li>
 </ul>
 
-<p>规则的具体结构如何描述、字段如何映射、复杂格式（跨行聚合、矩阵转置、复合单元格拆分、多Sheet合并、卡片式拆分、纯文本解析等）如何处理，由考生根据 9 份 demo 文件的实际差异自行设计方案。</p>
+<p>规则的具体结构如何描述、字段如何映射、复杂格式（跨行聚合、矩阵转置、复合单元格拆分、多Sheet合并、卡片式拆分、纯文本解析等）如何处理，由考生根据 6 份 demo 文件的实际差异自行设计方案。</p>
 
-<h4>9 份出库单差异说明（考生需全部兼容）</h4>
+<h4>6 份出库单差异说明（考生需全部兼容）</h4>
 <div class="alert">
   <strong>注意：</strong>以下文件为考核用例，考生不得为任何一份文件编写专门的硬编码解析逻辑。所有兼容能力必须通过<strong>配置不同的解析规则</strong>来实现（规则可由 AI 生成或手动配置）。<strong>代码中不应出现任何文件名判断或特定列名硬编码。</strong>
 </div>
@@ -152,29 +152,11 @@
     <td>非标准表格，每条调拨记录是一个独立的"卡片"区域（标题行+收货信息+物品小表），纵向堆叠</td>
     <td><strong>卡片边界识别</strong>：需识别"▶ 调拨记录 #N"作为卡片起始标志，每个卡片内部有独立的小表和收货信息</td>
   </tr>
-  <tr>
-    <td>门店配送确认单</td>
-    <td><span class="tag tag-orange">Word</span></td>
-    <td>纯文本段落格式，无任何表格。每条记录用分隔线隔开，物品信息用"编号. 编码 | 名称 | 规格 | 数量"的文本行</td>
-    <td><strong>纯文本解析</strong>：无结构化表格，需从段落文本中用正则或规则提取字段；"━━━"分隔线划分记录边界</td>
-  </tr>
-  <tr>
-    <td>周配送计划</td>
-    <td><span class="tag">Excel</span></td>
-    <td>日期作为列头横向展开（周一到周五），门店纵向排列，每个单元格含"物品名x数量\n物品名x数量"的复合值</td>
-    <td><strong>双重转置</strong>：需将日期×门店矩阵展开为多条记录；<strong>复合单元格拆分</strong>：单个单元格内的多行文本需拆为多行数据</td>
-  </tr>
-  <tr>
-    <td>配送签收单(多单PDF)</td>
-    <td><span class="tag">PDF</span></td>
-    <td>一个PDF内含3个独立的配送签收单，每个有独立的收货人信息和物品明细表格，以分隔线区分</td>
-    <td><strong>PDF多订单拆分</strong>：需识别分隔线/页面边界，将一个PDF拆为多条独立运单；每条运单的收货人信息和物品表格需配对</td>
-  </tr>
 </table>
 
 <h3>模块二：文件导入与解析执行</h3>
 <ul>
-  <li>支持上传 <strong>Excel（.xlsx/.xls）、Word（.docx）、PDF</strong> 文件，支持拖拽上传和点击上传</li>
+  <li>支持上传 <strong>Excel（.xlsx/.xls）、PDF</strong> 文件，支持拖拽上传和点击上传</li>
   <li><strong>解析流程</strong>：上传文件 → 用户<strong>手动选择已有规则</strong>或点击<strong>"新建规则"</strong> → 若新建则大模型先预处理分析文件生成推荐规则 → 用户手动微调确认 → 执行解析 → 展示结果</li>
   <li>所有规则匹配均为<strong>手动操作</strong>，不做自动匹配。用户从规则列表中选择或新建</li>
   <li>导入时显示<strong>实时进度条</strong>，显示百分比和当前处理条数/总条数</li>
@@ -271,15 +253,6 @@
   <strong>说明：</strong>本考区不计入总分，仅作为功能完整度参考。实现考点 1-5 的过程中自然覆盖以下能力的，视为满足 V1 基础要求。
 </div>
 
-<h3>考点 7：反思题（0 分）</h3>
-<p>本考点不计分。</p>
-<table>
-  <tr><th>序号</th><th>题目</th></tr>
-  <tr><td style="text-align:center">1</td><td>在"规则引擎 + AI 辅助生成"的架构中，你认为<strong>规则应该描述到什么粒度</strong>？太粗会导致什么问题？太细又会带来什么代价？</td></tr>
-  <tr><td style="text-align:center">2</td><td>AI 生成的解析规则和 AI 直接解析数据，两种方式各有什么优劣？在什么场景下你会选择哪种方式？</td></tr>
-  <tr><td style="text-align:center">3</td><td>如果纯人工编码（不借助 AI），你觉得完成这个项目需要多久？请给出你的预估时间和理由。</td></tr>
-</table>
-
 <!-- ====== 六、提交要求 ====== -->
 <h2>六、提交要求</h2>
 <ol>
@@ -295,7 +268,6 @@
 <h4>格式覆盖</h4>
 <ul>
   <li><span class="tag">Excel</span> 干扰头部 + 散落尾部 + 跨行聚合 + 矩阵转置 + 多Sheet + 卡片式 + 复合单元格</li>
-  <li><span class="tag">Word</span> 纯文本段落式（无表格），物品信息嵌在文本行中</li>
   <li><span class="tag">PDF</span> 多页多单 + 头部元信息 + 标准表格 + 底部签字区 + 独立签收页</li>
 </ul>
 
@@ -307,32 +279,9 @@
   <li><strong>矩阵转置</strong>：门店名/日期作为列头横向排列，需转置为独立运单记录</li>
   <li><strong>多Sheet合并</strong>：每个Sheet是一个独立门店的出库单，需遍历所有Sheet合并解析</li>
   <li><strong>卡片式堆叠</strong>：每条记录是一个独立"卡片"区域，非标准表格行，需按卡片边界拆分</li>
-  <li><strong>纯文本解析</strong>：Word文档无任何表格，物品信息用"编号:值"格式嵌在段落中</li>
   <li><strong>复合单元格</strong>：一个单元格内含"物品名x数量\n物品名x数量"的复合值，需拆分为多行</li>
   <li><strong>PDF多独立订单</strong>：同一PDF内含多个独立签收单，每单有自己的收货人和物品明细</li>
 </ul>
-
-<h4>演示文件下载</h4>
-<div class="demo-links">
- 见钉钉群
-</div>
-
-<!-- ====== 八、考试纪律 ====== -->
-<h2>八、考试纪律声明</h2>
-<div class="alert alert-danger">
-  <strong>考试纪律声明</strong><br>
-  本次考试中，若不同考生的作品出现以下情况之一，视为作弊，该考生本次考试成绩计 0 分：
-  <ul style="margin-top:8px">
-    <li>UI 高度相似（布局、配色、组件结构雷同，非通用模板所致）</li>
-    <li>存在相同 BUG 或相同非预期行为（表明代码来源相同）</li>
-    <li>代码结构、命名、注释高度一致</li>
-    <li>大模型 Prompt 设计完全相同</li>
-  </ul>
-</div>
-
-<div class="footer">
-  总分：100 分 &nbsp;|&nbsp; 考试时间：建议 120 分钟 &nbsp;|&nbsp; 日期：2026/06/01
-</div>
 
 </div>
 </body>
