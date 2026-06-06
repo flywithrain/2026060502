@@ -130,16 +130,19 @@ const DEMO_RULES = [
         tableEndMarker: "合计",
       },
       fieldMappings: [
-        { fromCol: 1, toField: "skuCode", aiConfidence: "high" },
-        { fromCol: 2, toField: "skuName", aiConfidence: "high" },
-        { fromCol: 3, toField: "skuSpec", aiConfidence: "high" },
-        { fromCol: 5, toField: "skuQuantity", aiConfidence: "high" },
+        { fromCol: 2, toField: "skuCode", aiConfidence: "high" },     // 列对齐网格 col3 物品编码
+        { fromCol: 3, toField: "skuName", aiConfidence: "high" },     // col4 物品名称
+        { fromCol: 4, toField: "skuSpec", aiConfidence: "medium" },   // col5 规格型号
+        { fromCol: 6, toField: "skuQuantity", aiConfidence: "high" }, // col7 发货数量
       ],
       kvExtract: [
         {
-          rows: [0],   // 头部元信息行
+          // 不限定行：全表扫描，提取头部"收货机构"与尾部"收货人/电话/地址"（同格 label：value）
           entries: [
             { label: "收货机构", toField: "storeName" },
+            { label: "收货人", toField: "receiverName" },
+            { label: "收货电话", toField: "receiverPhone" },
+            { label: "收货地址", toField: "receiverAddress" },
           ],
         },
       ],
@@ -159,9 +162,8 @@ const DEMO_RULES = [
       excel: {
         headerRows: 0,
         footerRows: 0,
-        dataStartRow: 4,              // 跳过标题+元信息+表头行(R1-R4)，从R5(index 4)开始数据
-        skipRows: [12],              // R12 合计行(index 11)
-        skipIfFirstColContains: ["合计", "总计"],
+        dataStartRow: 3,              // R4=index3 起为数据（R1标题/R2元信息/R3表头）
+        skipIfFirstColContains: ["合计", "收货门店", "联系电话", "制单人"], // 排除尾部命名行，不依赖固定行数
       },
       fieldMappings: [
         { fromCol: 1, toField: "skuCode", aiConfidence: "high" },     // col2物品编码
@@ -172,7 +174,7 @@ const DEMO_RULES = [
       ],
       kvExtract: [
         {
-          rows: [-4, -3],  // 倒数第4、3行(R14、R15)含收货信息KV对
+          rows: [-3, -2],  // 倒数第3行(收货门店/联系人)、倒数第2行(联系电话/收货地址)
           entries: [
             { label: "收货门店", toField: "storeName" },
             { label: "联系人", toField: "receiverName" },

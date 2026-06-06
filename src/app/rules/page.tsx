@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { Plus, Edit, Copy, Trash2, Settings, Sparkles, Database } from "lucide-react";
-import { getAllRules, deleteRule } from "@/lib/server-actions";
+import { getAllRules, deleteRule, duplicateRule } from "@/lib/server-actions";
 import { useToast } from "@/components/shared/toast";
 import { EmptyState } from "@/components/shared/empty-state";
 import type { ParseRule } from "@/types";
@@ -31,6 +31,19 @@ export default function RulesPage() {
       await deleteRule(id);
       showToast("规则已删除", "success");
       loadRules();
+    },
+    [loadRules, showToast]
+  );
+
+  const handleDuplicate = useCallback(
+    async (id: string) => {
+      try {
+        await duplicateRule(id);
+        showToast("规则已复制", "success");
+        loadRules();
+      } catch {
+        showToast("复制失败", "error");
+      }
     },
     [loadRules, showToast]
   );
@@ -119,6 +132,13 @@ export default function RulesPage() {
                 >
                   <Edit className="h-4 w-4" />
                   编辑
+                </button>
+                <button
+                  onClick={() => handleDuplicate(rule.id)}
+                  className="btn-ghost gap-1 text-xs"
+                >
+                  <Copy className="h-4 w-4" />
+                  复制
                 </button>
                 <button
                   onClick={() => handleDelete(rule.id)}

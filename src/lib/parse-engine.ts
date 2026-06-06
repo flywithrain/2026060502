@@ -1,32 +1,35 @@
 import type { ParsedFile, ParseRule, OrderRow, RawRow, KvExtractConfig, KvEntry, FieldMapping } from "@/types";
 
+// 整行拼接为文本（用于 marker / 边界匹配）
+function rowToText(row: RawRow): string {
+  return row.cells.map((c) => String(c ?? "")).join(" ");
+}
+
 // ====== KV 对提取 ======
-// 在一行中扫描标签，取标签右侧列的值
-function extractKvPairs(rows: RawRow[], kvConfigs: KvExtractConfig[] | undefined, dataStartRow: number, totalRows: number): Record<string, string> {
+// 在一行中按 entry 提取值，支持两种形态：
+//  1) 同一单元格内 "标签：值"（PDF 列对齐后常见）
+//  2) 标签单独成格，值在右侧相邻列（Excel 散落信息常见）
+function scanKvOnRow(row: RawRow, entries: KvEntry[]): Record<string, string> {
   const result: Record<string, string> = {};
-  if (!kvConfigs) return result;
+  for (const entry of entries) {
+    if (result[entry.toField]) continue;
+    for (let ci = 0; ci < row.cells.length; ci++) {
+      const cellText = String(row.cells[ci] ?? "").trim();
+      if (!cellText) continue;
 
-  for (const config of kvConfigs) {
-    for (const relRow of config.rows) {
-      // 正数: 从 dataStartRow 起偏移；负数: 从末尾倒数
-      const actualRow = relRow >= 0 ? dataStartRow + relRow : totalRows + relRow;
-      if (actualRow < 0 || actualRow >= totalRows) continue;
-
-      const row = rows[actualRow];
-      if (!row) continue;
-
-      for (const entry of config.entries) {
-        for (let ci = 0; ci < row.cells.length; ci++) {
-          const cellText = String(row.cells[ci] ?? "").trim();
-          // 匹配标签：忽略末尾冒号
-          if (!cellText) continue;
-          const cellClean = cellText.replace(/[：:]\s*$/, "");
-          if (cellClean === entry.label) {
-            // 取右边第一个非空列的值
-            const val = String(row.cells[ci + 1] ?? "").trim();
-            if (val) result[entry.toField] = val;
-            break; // 匹配到一个标签就跳出内层循环
-          }
+      // 形态1：同格 "标签：值"
+      const m = cellText.match(/^(.+?)[：:]\s*(.*)$/);
+      if (m && m[1].trim() === entry.label && m[2].trim()) {
+        result[entry.toField] = m[2].trim();
+        break;
+      }
+      // 形态2：单元格恰为标签（忽略末尾冒号），取右侧第一个非空列
+      const cellClean = cellText.replace(/[：:]\s*$/, "");
+      if (cellClean === entry.label) {
+        const val = String(row.cells[ci + 1] ?? "").trim();
+        if (val) {
+          result[entry.toField] = val;
+          break;
         }
       }
     }
@@ -34,18 +37,32 @@ function extractKvPairs(rows: RawRow[], kvConfigs: KvExtractConfig[] | undefined
   return result;
 }
 
-// 在单行中扫描标签，从当前行和相邻行提取 KV 对（返回提取到的值）
-function scanKvOnRow(row: RawRow, entries: KvEntry[]): Record<string, string> {
+// 提取头部/尾部非表格区的 KV 对。config.rows 缺省/空 => 扫描所有行（散落信息友好）
+function extractKvPairs(
+  rows: RawRow[],
+  kvConfigs: KvExtractConfig[] | undefined,
+  dataStartRow: number,
+  totalRows: number
+): Record<string, string> {
   const result: Record<string, string> = {};
-  for (const entry of entries) {
-    for (let ci = 0; ci < row.cells.length; ci++) {
-      const cellText = String(row.cells[ci] ?? "").trim();
-      if (!cellText) continue;
-      const cellClean = cellText.replace(/[：:]\s*$/, "");
-      if (cellClean === entry.label) {
-        const val = String(row.cells[ci + 1] ?? "").trim();
-        if (val) result[entry.toField] = val;
-        break;
+  if (!kvConfigs) return result;
+
+  for (const config of kvConfigs) {
+    let targetRows: number[];
+    if (!config.rows || config.rows.length === 0) {
+      targetRows = rows.map((_, i) => i); // 全表扫描
+    } else {
+      // 正数：从 dataStartRow 起偏移；负数：从末尾倒数
+      targetRows = config.rows.map((r) => (r >= 0 ? dataStartRow + r : totalRows + r));
+    }
+
+    for (const actualRow of targetRows) {
+      if (actualRow < 0 || actualRow >= totalRows) continue;
+      const row = rows[actualRow];
+      if (!row) continue;
+      const found = scanKvOnRow(row, config.entries);
+      for (const k in found) {
+        if (!result[k]) result[k] = found[k]; // 先到先得，不覆盖
       }
     }
   }
@@ -62,65 +79,113 @@ function applyFieldMappings(row: RawRow, mappings: FieldMapping[]): Record<strin
   return record;
 }
 
+// 由 mapped 记录 + KV + 默认值构造一条 OrderRow
+function buildOrderRow(
+  record: Record<string, string>,
+  kv: Record<string, string>,
+  defaults: Record<string, string> | undefined,
+  rowIndex: number
+): OrderRow {
+  const pick = (f: string) => record[f] || kv[f] || defaults?.[f] || "";
+  return {
+    id: crypto.randomUUID(),
+    rowIndex,
+    externalCode: pick("externalCode"),
+    storeName: pick("storeName"),
+    receiverName: pick("receiverName"),
+    receiverPhone: pick("receiverPhone"),
+    receiverAddress: pick("receiverAddress"),
+    skuCode: pick("skuCode"),
+    skuName: pick("skuName"),
+    skuQuantity: Number(record["skuQuantity"] || defaults?.["skuQuantity"] || 0) || 0,
+    skuSpec: pick("skuSpec"),
+    remark: pick("remark"),
+  };
+}
+
 // ====== 主解析函数 ======
 export function parseFile(file: ParsedFile, rule: ParseRule): OrderRow[] {
-  if (file.sheets && file.sheets.length > 1) {
-    // 多 Sheet 合并模式
+  // 多 Sheet 合并：以规则模式为准，而非文件 sheet 数
+  if (rule.parseMode === "multi-sheet" && file.sheets && file.sheets.length > 0) {
     return parseMultiSheet(file, rule);
   }
-
   return parseRows(file.rows, rule, 0);
 }
 
-// ====== 标准模式（含 aggregate/matrix/card） ======
+// ====== 模式分派 ======
 function parseRows(rows: RawRow[], rule: ParseRule, rowIndexOffset: number): OrderRow[] {
+  if (rows.length === 0) return [];
+
+  switch (rule.parseMode) {
+    case "matrix":
+      return parseMatrix(rows, rule, rowIndexOffset);
+    case "card":
+      return parseCards(rows, rule, rowIndexOffset);
+    case "aggregate":
+      return parseAggregate(rows, rule, rowIndexOffset);
+    default: // standard / multi-sheet(每 sheet)
+      return collectStandardRows(rows, rule, rowIndexOffset);
+  }
+}
+
+// ====== 标准模式抽取（standard / aggregate / multi-sheet 共用） ======
+function collectStandardRows(rows: RawRow[], rule: ParseRule, rowIndexOffset: number): OrderRow[] {
   const total = rows.length;
-  if (total === 0) return [];
-
-  const mode = rule.parseMode;
   const excel = rule.excel;
+  const pdf = rule.pdf;
 
-  if (mode === "matrix") return parseMatrix(rows, rule, rowIndexOffset);
-  if (mode === "card") return parseCards(rows, rule, rowIndexOffset);
-  if (mode === "aggregate") return parseAggregate(rows, rule, rowIndexOffset);
-
-  // ----- standard mode -----
-  const dataStartRow = excel?.dataStartRow ?? 0;
-  const footerRows = excel?.footerRows ?? 0;
-  const headerRows = excel?.headerRows ?? 0;
+  let dataStartRow = excel?.dataStartRow ?? 0;
+  let dataEndRow = total - (excel?.footerRows ?? 0); // 不含
   const skipIfFirstCol = excel?.skipIfFirstColContains ?? [];
-  const skipRows = new Set(excel?.skipRows?.map((r) => r - 1) ?? []);
+  const skipRows = new Set(excel?.skipRows?.map((r) => r - 1) ?? []); // skipRows 为 1-based
+
+  // PDF：用表格 marker 定位数据区
+  if (pdf?.tableStartMarker) {
+    for (let i = 0; i < total; i++) {
+      if (rowToText(rows[i]).includes(pdf.tableStartMarker)) {
+        dataStartRow = i + 1; // 表头下一行
+        break;
+      }
+    }
+  }
+  if (pdf?.tableEndMarker) {
+    for (let i = dataStartRow; i < total; i++) {
+      if (rowToText(rows[i]).includes(pdf.tableEndMarker)) {
+        dataEndRow = Math.min(dataEndRow, i);
+        break;
+      }
+    }
+  }
+
+  const kvValues = extractKvPairs(rows, rule.kvExtract, dataStartRow, total);
+  const hasSkuCodeMapping = rule.fieldMappings.some((m) => m.toField === "skuCode");
 
   const result: OrderRow[] = [];
   let rowIdx = 0;
 
-  // 提取 KV 对（头部或尾部元信息）
-  const kvValues = extractKvPairs(rows, rule.kvExtract, dataStartRow, total);
-
-  for (let i = dataStartRow; i < total - footerRows; i++) {
+  for (let i = dataStartRow; i < dataEndRow; i++) {
     if (skipRows.has(i)) continue;
-
     const row = rows[i];
+    if (!row) continue;
+
+    // 跳过跨页重复表头（PDF）
+    if (pdf?.tableStartMarker && rowToText(row).includes(pdf.tableStartMarker)) continue;
+
     const firstCell = String(row.cells[0] ?? "").trim();
-    if (!firstCell) continue;
-    if (skipIfFirstCol.some((s) => firstCell.includes(s))) continue;
+    if (skipIfFirstCol.some((s) => firstCell && firstCell.includes(s))) continue;
 
     const record = applyFieldMappings(row, rule.fieldMappings);
 
-    result.push({
-      id: crypto.randomUUID(),
-      rowIndex: rowIndexOffset + rowIdx,
-      externalCode: record["externalCode"] || rule.defaults?.["externalCode"] || kvValues["externalCode"] || "",
-      storeName: record["storeName"] || kvValues["storeName"] || rule.defaults?.["storeName"] || "",
-      receiverName: record["receiverName"] || kvValues["receiverName"] || rule.defaults?.["receiverName"] || "",
-      receiverPhone: record["receiverPhone"] || kvValues["receiverPhone"] || rule.defaults?.["receiverPhone"] || "",
-      receiverAddress: record["receiverAddress"] || kvValues["receiverAddress"] || rule.defaults?.["receiverAddress"] || "",
-      skuCode: record["skuCode"] || "",
-      skuName: record["skuName"] || "",
-      skuQuantity: Number(record["skuQuantity"]) || 0,
-      skuSpec: record["skuSpec"] || "",
-      remark: record["remark"] || "",
-    });
+    // 数据行有效性：有 skuCode 映射时以其非空为准（天然排除合计/尾部/碎片行）；
+    // 否则要求至少一个 mapped 列非空
+    if (hasSkuCodeMapping) {
+      if (!String(record["skuCode"] ?? "").trim()) continue;
+    } else {
+      const allEmpty = rule.fieldMappings.every((m) => !String(row.cells[m.fromCol] ?? "").trim());
+      if (allEmpty) continue;
+    }
+
+    result.push(buildOrderRow(record, kvValues, rule.defaults, rowIndexOffset + rowIdx));
     rowIdx++;
   }
 
@@ -132,47 +197,37 @@ function parseMatrix(rows: RawRow[], rule: ParseRule, rowIndexOffset: number): O
   const matrix = rule.matrix;
   if (!matrix) return [];
 
-  const storeHeaderRow = matrix.storeHeaderRow;
-  const storeStartCol = matrix.storeStartCol;
-  const storeEndCol = matrix.storeEndCol;
+  const { storeHeaderRow, storeStartCol, storeEndCol } = matrix;
+  const footerRows = rule.excel?.footerRows ?? 0;
+  const skipIfFirstCol = rule.excel?.skipIfFirstColContains ?? [];
 
-  // 提取门店名（从表头行）
   const headerRow = rows[storeHeaderRow];
   const storeNames: { col: number; name: string }[] = [];
   for (let ci = storeStartCol; ci <= storeEndCol; ci++) {
-    const name = String(headerRow?.cells[ci] ?? "").trim();
-    storeNames.push({ col: ci, name });
+    storeNames.push({ col: ci, name: String(headerRow?.cells[ci] ?? "").trim() });
   }
 
   const result: OrderRow[] = [];
   const kvValues = extractKvPairs(rows, rule.kvExtract, 0, rows.length);
 
-  for (let ri = storeHeaderRow + 1; ri < rows.length; ri++) {
+  for (let ri = storeHeaderRow + 1; ri < rows.length - footerRows; ri++) {
     const row = rows[ri];
     const firstCell = String(row.cells[0] ?? "").trim();
     if (!firstCell) continue;
+    if (skipIfFirstCol.some((s) => firstCell.includes(s))) continue;
 
-    // 提取 SKU 信息
     const skuRecord = applyFieldMappings(row, matrix.fixedColMappings);
+    if (!String(skuRecord["skuCode"] ?? "").trim() && !String(skuRecord["skuName"] ?? "").trim()) continue;
 
     for (const { col, name } of storeNames) {
+      if (!name) continue;
       const qty = Number(row.cells[col]) || 0;
-      if (qty <= 0) continue;  // 数量为0的不生成记录
+      if (qty <= 0) continue; // 仅为非零数量单元格生成记录
 
-      result.push({
-        id: crypto.randomUUID(),
-        rowIndex: rowIndexOffset + result.length,
-        externalCode: kvValues["externalCode"] || "",
-        storeName: name,
-        receiverName: kvValues["receiverName"] || "",
-        receiverPhone: kvValues["receiverPhone"] || "",
-        receiverAddress: kvValues["receiverAddress"] || "",
-        skuCode: skuRecord["skuCode"] || "",
-        skuName: skuRecord["skuName"] || "",
-        skuQuantity: qty,
-        skuSpec: skuRecord["skuSpec"] || "",
-        remark: skuRecord["remark"] || "",
-      });
+      const base = buildOrderRow(skuRecord, kvValues, rule.defaults, rowIndexOffset + result.length);
+      base.storeName = name;
+      base.skuQuantity = qty;
+      result.push(base);
     }
   }
 
@@ -180,42 +235,39 @@ function parseMatrix(rows: RawRow[], rule: ParseRule, rowIndexOffset: number): O
 }
 
 // ====== 跨行聚合模式 ======
+// 先按标准模式抽取每行，再按 groupByField 分组、用组内首个非空值回填 sharedFields
 function parseAggregate(rows: RawRow[], rule: ParseRule, rowIndexOffset: number): OrderRow[] {
   const agg = rule.aggregate;
-  if (!agg) return parseRows(rows, rule, rowIndexOffset);
+  const base = collectStandardRows(rows, rule, rowIndexOffset);
+  if (!agg) return base;
 
-  const excel = rule.excel;
-  const dataStartRow = excel?.dataStartRow ?? 0;
-  const footerRows = excel?.footerRows ?? 0;
-  const skipIfFirstCol = excel?.skipIfFirstColContains ?? [];
-
-  const result: OrderRow[] = [];
-
-  for (let i = dataStartRow; i < rows.length - footerRows; i++) {
-    const row = rows[i];
-    const firstCell = String(row.cells[0] ?? "").trim();
-    if (!firstCell) continue;
-    if (skipIfFirstCol.some((s) => firstCell.includes(s))) continue;
-
-    const record = applyFieldMappings(row, rule.fieldMappings);
-
-    result.push({
-      id: crypto.randomUUID(),
-      rowIndex: rowIndexOffset + result.length,
-      externalCode: record["externalCode"] || rule.defaults?.["externalCode"] || "",
-      storeName: record["storeName"] || rule.defaults?.["storeName"] || "",
-      receiverName: record["receiverName"] || rule.defaults?.["receiverName"] || "",
-      receiverPhone: record["receiverPhone"] || rule.defaults?.["receiverPhone"] || "",
-      receiverAddress: record["receiverAddress"] || rule.defaults?.["receiverAddress"] || "",
-      skuCode: record["skuCode"] || "",
-      skuName: record["skuName"] || "",
-      skuQuantity: Number(record["skuQuantity"]) || 0,
-      skuSpec: record["skuSpec"] || "",
-      remark: record["remark"] || "",
-    });
+  const groups = new Map<string, OrderRow[]>();
+  for (const r of base) {
+    const key = String((r as unknown as Record<string, unknown>)[agg.groupByField] ?? "").trim();
+    if (!key) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(r);
   }
 
-  return result;
+  for (const group of groups.values()) {
+    for (const field of agg.sharedFields) {
+      let shared = "";
+      for (const r of group) {
+        const v = String((r as unknown as Record<string, unknown>)[field] ?? "").trim();
+        if (v) {
+          shared = v;
+          break;
+        }
+      }
+      if (!shared) continue;
+      for (const r of group) {
+        const rec = r as unknown as Record<string, unknown>;
+        if (!String(rec[field] ?? "").trim()) rec[field] = shared;
+      }
+    }
+  }
+
+  return base;
 }
 
 // ====== 卡片识别模式 ======
@@ -230,36 +282,31 @@ function parseCards(rows: RawRow[], rule: ParseRule, rowIndexOffset: number): Or
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
     const firstCell = String(row.cells[0] ?? "");
-    const rowText = row.cells.map((c) => String(c ?? "")).join(" ");
+    const rowText = rowToText(row);
 
-    // 检测卡片边界
+    // 卡片边界：重置当前卡片元信息
     if (boundaryRe.test(firstCell) || boundaryRe.test(rowText)) {
-      currentMeta = {}; // 重置
+      currentMeta = {};
     }
 
-    // 扫描当前行是否有 KV 标签
+    // KV 行（门店/收货人等）：仅更新 meta，不作数据行
     const kvFound = scanKvOnRow(row, card.cardMetaMappings);
     if (Object.keys(kvFound).length > 0) {
       Object.assign(currentMeta, kvFound);
+      continue;
     }
 
-    // 尝试按 dataFieldMappings 提取数据行
+    // 数据行判据：skuCode 非空 且 数量为正数（排除表头/合计/边界行）
     const dataRecord = applyFieldMappings(row, card.dataFieldMappings);
-    if (dataRecord["skuCode"] || dataRecord["skuName"]) {
-      result.push({
-        id: crypto.randomUUID(),
-        rowIndex: rowIndexOffset + result.length,
-        externalCode: currentMeta["externalCode"] || "",
-        storeName: currentMeta["storeName"] || "",
-        receiverName: currentMeta["receiverName"] || "",
-        receiverPhone: currentMeta["receiverPhone"] || "",
-        receiverAddress: currentMeta["receiverAddress"] || "",
-        skuCode: dataRecord["skuCode"] || "",
-        skuName: dataRecord["skuName"] || "",
-        skuQuantity: Number(dataRecord["skuQuantity"]) || 0,
-        skuSpec: dataRecord["skuSpec"] || "",
-        remark: dataRecord["remark"] || "",
-      });
+    const qty = Number(dataRecord["skuQuantity"]);
+    if (String(dataRecord["skuCode"] ?? "").trim() && qty > 0) {
+      const base = buildOrderRow(dataRecord, {}, rule.defaults, rowIndexOffset + result.length);
+      base.externalCode = currentMeta["externalCode"] || base.externalCode;
+      base.storeName = currentMeta["storeName"] || base.storeName;
+      base.receiverName = currentMeta["receiverName"] || base.receiverName;
+      base.receiverPhone = currentMeta["receiverPhone"] || base.receiverPhone;
+      base.receiverAddress = currentMeta["receiverAddress"] || base.receiverAddress;
+      result.push(base);
     }
   }
 
@@ -272,7 +319,7 @@ function parseMultiSheet(file: ParsedFile, rule: ParseRule): OrderRow[] {
   let offset = 0;
 
   for (const sheet of file.sheets ?? []) {
-    const sheetRows = parseRows(sheet.rows, rule, offset);
+    const sheetRows = collectStandardRows(sheet.rows, rule, offset);
     all.push(...sheetRows);
     offset += sheet.rows.length;
   }

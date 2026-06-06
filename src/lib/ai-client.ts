@@ -18,9 +18,8 @@ const SYSTEM_PROMPT = `你是一个物流发货单解析专家。你需要分析
       "skipIfFirstColContains": ["合计", "总计"]
     },
     "pdf": {
-      "tableStartMarker": "",
-      "tableEndMarker": "",
-      "footerStartMarker": ""
+      "tableStartMarker": "物品类别",
+      "tableEndMarker": "合计"
     },
     "fieldMappings": [
       {"fromCol": 1, "toField": "externalCode", "aiConfidence": "high"},
@@ -63,14 +62,16 @@ const SYSTEM_PROMPT = `你是一个物流发货单解析专家。你需要分析
 4. 各parseMode适用场景：
    - standard: 标准表格，行列对应（用excel.dataStartRow跳过非数据行，用fieldMappings映射列→字段）
    - aggregate: 同一编号下多行，需要按组聚合共享字段
-   - matrix: 横向展开的门店×SKU矩阵（用fixedColMappings映射SKU信息列，门槛名从表头行的storeStartCol到storeEndCol读取）
+   - matrix: 横向展开的门店×SKU矩阵（用fixedColMappings映射SKU信息列，门店名从表头行的storeStartCol到storeEndCol读取）
    - card: 卡片式布局，有明确边界标记（cardMetaMappings扫描每行KV标签提取门店/收货人，dataFieldMappings映射卡片内物品表）
    - multi-sheet: 多个Sheet，每个Sheet独立
-5. kvExtract配置用于提取非表格结构的K-V对（如底部"收货人：张三"这类信息）：
-   - rows: 行偏移数组，正数从dataStartRow起，负数从文件末尾倒数
-   - entries: 每项包含 label(标签文字) 和 toField(目标字段)
-6. 请仔细检查，确保所有字段映射正确
-7. ⚠️ 直接返回纯 JSON，不要加任何前缀或后缀文字`;
+5. PDF 文件已按文本 X 坐标自动对齐成表格网格（列从 0 开始），因此与 Excel 一样用 fieldMappings 的 fromCol 按列号映射；并用 pdf.tableStartMarker（表头关键词，如"物品类别"）定位数据起始行、tableEndMarker（如"合计"）截断尾部。
+6. kvExtract配置用于提取非表格结构的K-V对（如"收货人：张三"或"收货人"单独成格、值在右侧）：
+   - rows: 行偏移数组，正数从dataStartRow起，负数从文件末尾倒数；**可省略/留空 = 扫描所有行**（适合 PDF 头尾散落的收货信息）
+   - entries: 每项包含 label(标签文字) 和 toField(目标字段)，同时支持"label：value"同格与标签独立成格两种形态
+7. 行号基准：excel.dataStartRow 为 0-based（第一行是 0）；excel.skipRows 为 1-based（与 Excel 行号一致）
+8. 请仔细检查，确保所有字段映射正确
+9. ⚠️ 直接返回纯 JSON，不要加任何前缀或后缀文字`;
 
 function buildSamplePrompt(rows: RawRow[], fileType: string, fileName: string): string {
   const maxSampleRows = Math.min(rows.length, 50);

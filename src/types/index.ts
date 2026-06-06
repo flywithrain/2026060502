@@ -42,7 +42,7 @@ export interface KvEntry {
 
 // KV提取配置：按标签名扫描行，提取键值对
 export interface KvExtractConfig {
-  rows: number[];          // 行号（0-based），正数从dataStartRow起，负数从末尾倒数
+  rows?: number[];         // 行号（0-based），正数从dataStartRow起，负数从末尾倒数；缺省或空数组=扫描所有行（PDF散落信息友好）
   entries: KvEntry[];
 }
 

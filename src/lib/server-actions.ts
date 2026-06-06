@@ -2,7 +2,7 @@
 
 import { db, sql } from "@/lib/db";
 import { parseRules, orders } from "@/lib/db-schema";
-import { eq, ilike, desc, and, or, sql as drizzleSql } from "drizzle-orm";
+import { eq, ilike, desc, and, inArray, sql as drizzleSql } from "drizzle-orm";
 import type { ParseRule } from "@/types";
 import { generateId } from "@/lib/utils";
 
@@ -39,6 +39,14 @@ export async function deleteRule(id: string): Promise<void> {
   await db.delete(parseRules).where(eq(parseRules.id, id));
 }
 
+// 复制规则：读取原规则 → 以"原名 - 副本"另存
+export async function duplicateRule(id: string): Promise<string> {
+  const rule = await getRule(id);
+  if (!rule) throw new Error("规则不存在");
+  const { id: _id, createdAt: _c, updatedAt: _u, ...rest } = rule;
+  return saveRule({ ...rest, name: `${rule.name} - 副本` });
+}
+
 export async function getRule(id: string): Promise<ParseRule | null> {
   const result = await db.select().from(parseRules).where(eq(parseRules.id, id)).limit(1);
   if (result.length === 0) return null;
@@ -67,37 +75,61 @@ export async function getAllRules(): Promise<ParseRule[]> {
 export async function submitOrders(
   orderRows: { externalCode: string; storeName: string; receiverName: string; receiverPhone: string; receiverAddress: string; skuCode: string; skuName: string; skuQuantity: number; skuSpec: string; remark: string }[],
   batchId: string
-): Promise<{ success: number; failed: number }> {
+): Promise<{ success: number; failed: number; errors: { rowIndex: number; message: string }[] }> {
   let success = 0;
   let failed = 0;
+  const errors: { rowIndex: number; message: string }[] = [];
 
-  for (const row of orderRows) {
-    const values = {
-      externalCode: row.externalCode || null,
-      storeName: row.storeName || null,
-      receiverName: row.receiverName || null,
-      receiverPhone: row.receiverPhone || null,
-      receiverAddress: row.receiverAddress || null,
-      skuCode: row.skuCode,
-      skuName: row.skuName,
-      skuQuantity: String(row.skuQuantity),
-      skuSpec: row.skuSpec || null,
-      remark: row.remark || null,
-      batchId,
-    };
+  const records = orderRows.map((row) => ({
+    externalCode: row.externalCode || null,
+    storeName: row.storeName || null,
+    receiverName: row.receiverName || null,
+    receiverPhone: row.receiverPhone || null,
+    receiverAddress: row.receiverAddress || null,
+    skuCode: row.skuCode,
+    skuName: row.skuName,
+    skuQuantity: String(row.skuQuantity),
+    skuSpec: row.skuSpec || null,
+    remark: row.remark || null,
+    batchId,
+  }));
 
-    await db.insert(orders).values(values);
-    success++;
+  const BATCH = 200;
+  for (let i = 0; i < records.length; i += BATCH) {
+    const chunk = records.slice(i, i + BATCH);
+    try {
+      // 单条 SQL 多值批量插入，避免逐条往返
+      await db.insert(orders).values(chunk);
+      success += chunk.length;
+    } catch {
+      // 整批失败时逐条重试以定位失败行
+      for (let j = 0; j < chunk.length; j++) {
+        try {
+          await db.insert(orders).values(chunk[j]);
+          success++;
+        } catch (e2) {
+          failed++;
+          errors.push({ rowIndex: i + j, message: e2 instanceof Error ? e2.message : String(e2) });
+        }
+      }
+    }
   }
 
-  return { success, failed };
+  return { success, failed, errors };
 }
 
-export async function getExistingExternalCodes(): Promise<Set<string>> {
+export async function getExistingExternalCodes(codes?: string[]): Promise<Set<string>> {
+  // 传入 codes 时只查这些编码（避免全表拉取）；为空数组直接返回空
+  if (codes && codes.length === 0) return new Set();
+
+  const whereClause = codes && codes.length > 0
+    ? and(drizzleSql`${orders.externalCode} IS NOT NULL`, inArray(orders.externalCode, codes))
+    : drizzleSql`${orders.externalCode} IS NOT NULL`;
+
   const result = await db
     .select({ code: orders.externalCode })
     .from(orders)
-    .where(drizzleSql`${orders.externalCode} IS NOT NULL`);
+    .where(whereClause);
 
   return new Set(result.map((r) => r.code).filter(Boolean) as string[]);
 }

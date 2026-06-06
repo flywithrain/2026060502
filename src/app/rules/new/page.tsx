@@ -6,6 +6,7 @@ import { Sparkles, Save, Play, ArrowLeft, Loader2, AlertCircle, CheckCircle, Hel
 import { useToast } from "@/components/shared/toast";
 import { parseFile } from "@/lib/parse-engine";
 import { readFile } from "@/lib/file-reader";
+import { validateOrders } from "@/lib/validators";
 import { saveRule } from "@/lib/server-actions";
 import type { ParseRuleDraft, AiRuleResponse, RawRow, OrderRow, FieldMapping } from "@/types";
 
@@ -30,14 +31,27 @@ function RuleEditor({
   fileName: string;
 }) {
   const handleTestParse = useCallback(() => {
-    const rows = parseFile(
-      { fileName, fileType: rule.fileType as "excel" | "pdf", rows: fileRows },
-      rule as never
-    );
-    // 把结果暂存到 sessionStorage 供预览查看
-    sessionStorage.setItem("ruleTestPreview", JSON.stringify(rows.slice(0, 20)));
-    sessionStorage.setItem("ruleTestFileName", fileName);
-    window.open("/preview", "_blank");
+    try {
+      const parsed = parseFile(
+        { fileName, fileType: rule.fileType as "excel" | "pdf", rows: fileRows },
+        rule as never
+      );
+      const errs = validateOrders(parsed);
+      // 写入与预览页一致的 previewData，新标签打开预览
+      sessionStorage.setItem(
+        "previewData",
+        JSON.stringify({
+          rows: parsed,
+          errors: errs,
+          fileName: `[试解析] ${fileName}`,
+          ruleName: rule.name || "未命名规则",
+          parseDuration: 0,
+        })
+      );
+      window.open("/preview", "_blank");
+    } catch (e) {
+      alert("试解析失败：" + (e instanceof Error ? e.message : String(e)));
+    }
   }, [rule, fileRows, fileName]);
 
   const availableFields = [
@@ -196,6 +210,20 @@ function RuleEditor({
             <span className="tag tag-orange">中置信度: {aiResponse.confidenceSummary.medium}</span>
             <span className="tag tag-red">低置信度: {aiResponse.confidenceSummary.low}</span>
           </div>
+        </div>
+      )}
+
+      {/* 试解析预览 */}
+      {fileRows.length > 0 && (
+        <div className="card flex items-center justify-between">
+          <div>
+            <h3 className="text-base font-semibold">试解析预览</h3>
+            <p className="mt-0.5 text-sm text-[#86909c]">用当前规则解析样例文件（{fileRows.length} 行），在新标签页查看结果，确认无误后再保存。</p>
+          </div>
+          <button onClick={handleTestParse} className="btn-outline gap-1.5 text-sm">
+            <Play className="h-4 w-4" />
+            试解析预览
+          </button>
         </div>
       )}
     </div>
