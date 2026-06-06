@@ -103,12 +103,19 @@ export async function generateRule(
   fileName: string
 ): Promise<AiRuleResponse> {
   // 去除复制粘贴常带的首尾空格、换行与包裹引号，避免 401
-  const apiUrl = (process.env.DEEPSEEK_API_URL || "https://api.deepseek.com/v1/chat/completions").trim();
+  const apiUrl = (process.env.DEEPSEEK_API_URL || "").trim();
   const apiKey = (process.env.DEEPSEEK_API_KEY || "").trim().replace(/^["']|["']$/g, "");
-  const model = (process.env.DEEPSEEK_MODEL || "deepseek-chat").trim();
+  const model = (process.env.DEEPSEEK_MODEL || "").trim();
 
+  // 不再静默 fallback 到 deepseek，缺配置即明确报错
+  if (!apiUrl) {
+    throw new Error("AI 接口地址未配置：请设置 DEEPSEEK_API_URL（例如小米 Mimo 的 /chat/completions 端点）");
+  }
   if (!apiKey) {
     throw new Error("DEEPSEEK_API_KEY 环境变量未配置");
+  }
+  if (!model) {
+    throw new Error("DEEPSEEK_MODEL 环境变量未配置（例如 mimo-v2.5-pro）");
   }
 
   const samplePrompt = buildSamplePrompt(rows, fileType, fileName);
