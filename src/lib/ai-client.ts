@@ -102,9 +102,10 @@ export async function generateRule(
   fileType: string,
   fileName: string
 ): Promise<AiRuleResponse> {
-  const apiUrl = process.env.DEEPSEEK_API_URL || "https://api.deepseek.com/v1/chat/completions";
-  const apiKey = process.env.DEEPSEEK_API_KEY || "";
-  const model = process.env.DEEPSEEK_MODEL || "deepseek-chat";
+  // 去除复制粘贴常带的首尾空格、换行与包裹引号，避免 401
+  const apiUrl = (process.env.DEEPSEEK_API_URL || "https://api.deepseek.com/v1/chat/completions").trim();
+  const apiKey = (process.env.DEEPSEEK_API_KEY || "").trim().replace(/^["']|["']$/g, "");
+  const model = (process.env.DEEPSEEK_MODEL || "deepseek-chat").trim();
 
   if (!apiKey) {
     throw new Error("DEEPSEEK_API_KEY 环境变量未配置");
@@ -139,7 +140,11 @@ export async function generateRule(
 
   if (!response.ok) {
     const errText = await response.text();
-    console.error("AI API error:", errText);
+    // 诊断信息：打印 url/model/key 长度与尾部（不泄露完整 key），便于定位配置问题
+    console.error("AI API error:", errText, "| url:", apiUrl, "| model:", model, "| keyLen:", apiKey.length, "| keyTail:", apiKey.slice(-4));
+    if (response.status === 401) {
+      throw new Error("AI 鉴权失败(401)：请确认 DEEPSEEK_API_KEY 正确无误、与 DEEPSEEK_API_URL 属于同一服务商，且在 Vercel 修改环境变量后已重新部署(Redeploy)");
+    }
     throw new Error(`AI API 调用失败: ${response.status}`);
   }
 
