@@ -36,7 +36,9 @@ export async function readExcel(file: File): Promise<ParsedFile> {
 
 export async function readPdf(file: File): Promise<ParsedFile> {
   const pdfjsLib = await import("pdfjs-dist");
-  pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.worker.min.mjs`;
+  // 使用项目自带的 worker（版本与 pdfjs-dist 必然一致、无需外网）。
+  // 注意：升级 pdfjs-dist 后需重新执行 `cp node_modules/pdfjs-dist/build/pdf.worker.min.mjs public/`
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
 
   const buffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;

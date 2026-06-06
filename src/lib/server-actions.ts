@@ -1,7 +1,7 @@
 "use server";
 
 import { db, sql } from "@/lib/db";
-import { parseRules, orders } from "@/lib/db-schema";
+import { parseRules, shipments, orders } from "@/lib/db-schema";
 import { eq, ilike, desc, and, inArray, sql as drizzleSql } from "drizzle-orm";
 import type { ParseRule } from "@/types";
 import { generateId } from "@/lib/utils";
@@ -72,46 +72,68 @@ export async function getAllRules(): Promise<ParseRule[]> {
 }
 
 // ====== 运单 CRUD ======
+type SubmitRow = { externalCode: string; storeName: string; receiverName: string; receiverPhone: string; receiverAddress: string; skuCode: string; skuName: string; skuQuantity: number; skuSpec: string; remark: string };
+
+// 按外部编码聚合写入主子表：一个外部编码=一条 shipment + 多条 orders 明细；无外部编码的行各自独立成单
 export async function submitOrders(
-  orderRows: { externalCode: string; storeName: string; receiverName: string; receiverPhone: string; receiverAddress: string; skuCode: string; skuName: string; skuQuantity: number; skuSpec: string; remark: string }[],
+  orderRows: SubmitRow[],
   batchId: string
 ): Promise<{ success: number; failed: number; errors: { rowIndex: number; message: string }[] }> {
   let success = 0;
   let failed = 0;
   const errors: { rowIndex: number; message: string }[] = [];
 
-  const records = orderRows.map((row) => ({
-    externalCode: row.externalCode || null,
-    storeName: row.storeName || null,
-    receiverName: row.receiverName || null,
-    receiverPhone: row.receiverPhone || null,
-    receiverAddress: row.receiverAddress || null,
-    skuCode: row.skuCode,
-    skuName: row.skuName,
-    skuQuantity: String(row.skuQuantity),
-    skuSpec: row.skuSpec || null,
-    remark: row.remark || null,
-    batchId,
-  }));
+  // 分组：有外编码按编码聚合，无编码每行独立
+  const groups = new Map<string, SubmitRow[]>();
+  orderRows.forEach((row, idx) => {
+    const code = row.externalCode?.trim();
+    const key = code ? `code:${code}` : `row:${idx}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(row);
+  });
 
-  const BATCH = 200;
-  for (let i = 0; i < records.length; i += BATCH) {
-    const chunk = records.slice(i, i + BATCH);
-    try {
-      // 单条 SQL 多值批量插入，避免逐条往返
-      await db.insert(orders).values(chunk);
-      success += chunk.length;
-    } catch {
-      // 整批失败时逐条重试以定位失败行
-      for (let j = 0; j < chunk.length; j++) {
-        try {
-          await db.insert(orders).values(chunk[j]);
-          success++;
-        } catch (e2) {
-          failed++;
-          errors.push({ rowIndex: i + j, message: e2 instanceof Error ? e2.message : String(e2) });
-        }
+  for (const group of groups.values()) {
+    const shipmentId = generateId();
+    const code = group[0].externalCode?.trim() || null;
+    const pick = (f: keyof SubmitRow): string | null => {
+      for (const r of group) {
+        const v = String(r[f] ?? "").trim();
+        if (v) return v;
       }
+      return null;
+    };
+    const totalQty = group.reduce((s, r) => s + (Number(r.skuQuantity) || 0), 0);
+
+    try {
+      await db.insert(shipments).values({
+        id: shipmentId,
+        externalCode: code,
+        storeName: pick("storeName"),
+        receiverName: pick("receiverName"),
+        receiverPhone: pick("receiverPhone"),
+        receiverAddress: pick("receiverAddress"),
+        remark: pick("remark"),
+        skuCount: group.length,
+        totalQuantity: String(totalQty),
+        batchId,
+      });
+
+      const items = group.map((r) => ({
+        shipmentId,
+        skuCode: r.skuCode,
+        skuName: r.skuName,
+        skuQuantity: String(r.skuQuantity),
+        skuSpec: r.skuSpec || null,
+        remark: r.remark || null,
+      }));
+      const BATCH = 200;
+      for (let i = 0; i < items.length; i += BATCH) {
+        await db.insert(orders).values(items.slice(i, i + BATCH));
+      }
+      success += group.length;
+    } catch (e) {
+      failed += group.length;
+      errors.push({ rowIndex: -1, message: `单据 ${code || "(无编码)"} 写入失败：${e instanceof Error ? e.message : String(e)}` });
     }
   }
 
@@ -119,49 +141,42 @@ export async function submitOrders(
 }
 
 export async function getExistingExternalCodes(codes?: string[]): Promise<Set<string>> {
-  // 传入 codes 时只查这些编码（避免全表拉取）；为空数组直接返回空
+  // 外部编码现存于主表 shipments；传入 codes 时只查这些（避免全表拉取）
   if (codes && codes.length === 0) return new Set();
 
   const whereClause = codes && codes.length > 0
-    ? and(drizzleSql`${orders.externalCode} IS NOT NULL`, inArray(orders.externalCode, codes))
-    : drizzleSql`${orders.externalCode} IS NOT NULL`;
+    ? and(drizzleSql`${shipments.externalCode} IS NOT NULL`, inArray(shipments.externalCode, codes))
+    : drizzleSql`${shipments.externalCode} IS NOT NULL`;
 
   const result = await db
-    .select({ code: orders.externalCode })
-    .from(orders)
+    .select({ code: shipments.externalCode })
+    .from(shipments)
     .where(whereClause);
 
   return new Set(result.map((r) => r.code).filter(Boolean) as string[]);
 }
 
-export async function getOrdersPage(
+// 运单（主表）分页查询
+export async function getShipmentsPage(
   page: number,
   pageSize: number,
   search?: string,
   receiverName?: string,
   startDate?: string,
   endDate?: string
-): Promise<{ rows: typeof orders.$inferSelect[]; total: number }> {
-  let conditions = [];
+): Promise<{ rows: typeof shipments.$inferSelect[]; total: number }> {
+  const conditions = [];
 
-  if (search) {
-    conditions.push(ilike(orders.externalCode, `%${search}%`));
-  }
-  if (receiverName) {
-    conditions.push(ilike(orders.receiverName, `%${receiverName}%`));
-  }
-  if (startDate) {
-    conditions.push(drizzleSql`${orders.submittedAt} >= ${new Date(startDate)}`);
-  }
-  if (endDate) {
-    conditions.push(drizzleSql`${orders.submittedAt} <= ${new Date(endDate + "T23:59:59")}`);
-  }
+  if (search) conditions.push(ilike(shipments.externalCode, `%${search}%`));
+  if (receiverName) conditions.push(ilike(shipments.receiverName, `%${receiverName}%`));
+  if (startDate) conditions.push(drizzleSql`${shipments.submittedAt} >= ${new Date(startDate)}`);
+  if (endDate) conditions.push(drizzleSql`${shipments.submittedAt} <= ${new Date(endDate + "T23:59:59")}`);
 
   const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
   const [countResult] = await db
     .select({ count: drizzleSql<number>`count(*)` })
-    .from(orders)
+    .from(shipments)
     .where(whereClause)
     .execute();
 
@@ -169,11 +184,16 @@ export async function getOrdersPage(
 
   const rows = await db
     .select()
-    .from(orders)
+    .from(shipments)
     .where(whereClause)
-    .orderBy(desc(orders.submittedAt))
+    .orderBy(desc(shipments.submittedAt))
     .limit(pageSize)
     .offset((page - 1) * pageSize);
 
   return { rows, total };
+}
+
+// 单条运单的 SKU 明细
+export async function getShipmentDetail(shipmentId: string): Promise<typeof orders.$inferSelect[]> {
+  return db.select().from(orders).where(eq(orders.shipmentId, shipmentId));
 }

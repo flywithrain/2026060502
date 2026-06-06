@@ -138,20 +138,30 @@ export interface SubmitResult {
 }
 
 // ====== 数据库记录 ======
-export interface DbOrder {
+// 出库单主表行（按外部编码聚合）
+export interface DbShipment {
   id: string;
-  externalCode: string;
-  storeName: string;
-  receiverName: string;
-  receiverPhone: string;
-  receiverAddress: string;
-  skuCode: string;
-  skuName: string;
-  skuQuantity: number;
-  skuSpec: string;
-  remark: string;
+  externalCode: string | null;
+  storeName: string | null;
+  receiverName: string | null;
+  receiverPhone: string | null;
+  receiverAddress: string | null;
+  remark: string | null;
+  skuCount: number;
+  totalQuantity: string;
   batchId: string;
   submittedAt: string;
+}
+
+// SKU 明细子表行
+export interface DbOrderItem {
+  id: string;
+  shipmentId: string;
+  skuCode: string;
+  skuName: string;
+  skuQuantity: string;
+  skuSpec: string | null;
+  remark: string | null;
 }
 
 // ====== 文件读取 ======

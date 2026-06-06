@@ -46,34 +46,68 @@ export function validateSingleRow(row: OrderRow): ValidationError[] {
   return validateOrders([row]);
 }
 
+// 外部编码与「数据库已存在」的冲突检测。
+// 注意：同批次内同编码是正常的（按编码聚合的多 SKU 行），不再视为重复。
 export function checkExternalCodeDuplicates(
   rows: OrderRow[],
   existingCodes?: Set<string>
 ): ValidationError[] {
   const errors: ValidationError[] = [];
-  const seen = new Map<string, number>();
+  if (!existingCodes || existingCodes.size === 0) return errors;
 
+  const reported = new Set<string>();
   for (const row of rows) {
     const code = row.externalCode?.trim();
-    if (!code) continue;
-
-    const prev = seen.get(code);
-    if (prev !== undefined) {
-      errors.push({
-        rowIndex: row.rowIndex,
-        field: "externalCode",
-        message: `外部编码"${code}"与第${prev + 1}行重复`,
-      });
-    } else {
-      seen.set(code, row.rowIndex);
-    }
-
-    if (existingCodes?.has(code)) {
+    if (!code || reported.has(code)) continue;
+    if (existingCodes.has(code)) {
+      reported.add(code);
       errors.push({
         rowIndex: row.rowIndex,
         field: "externalCode",
         message: `外部编码"${code}"已存在于数据库中`,
       });
+    }
+  }
+
+  return errors;
+}
+
+// 同一外部编码下，收货信息（门店/收件人/电话/地址）必须一致。
+// 任一字段在组内出现 ≥2 种非空值，则对该组所有行的该字段标错。
+export function checkReceiverConsistency(rows: OrderRow[]): ValidationError[] {
+  const errors: ValidationError[] = [];
+  const fields: { key: keyof OrderRow; label: string }[] = [
+    { key: "storeName", label: "收货门店" },
+    { key: "receiverName", label: "收件人姓名" },
+    { key: "receiverPhone", label: "收件人电话" },
+    { key: "receiverAddress", label: "收件人地址" },
+  ];
+
+  const groups = new Map<string, OrderRow[]>();
+  for (const row of rows) {
+    const code = row.externalCode?.trim();
+    if (!code) continue; // 无外部编码的行独立成单，不参与一致性校验
+    if (!groups.has(code)) groups.set(code, []);
+    groups.get(code)!.push(row);
+  }
+
+  for (const [code, group] of groups) {
+    if (group.length < 2) continue;
+    for (const f of fields) {
+      const values = new Set<string>();
+      for (const r of group) {
+        const v = String(r[f.key] ?? "").trim();
+        if (v) values.add(v);
+      }
+      if (values.size > 1) {
+        for (const r of group) {
+          errors.push({
+            rowIndex: r.rowIndex,
+            field: f.key as string,
+            message: `外部编码"${code}"下${f.label}不一致，请统一后再提交`,
+          });
+        }
+      }
     }
   }
 

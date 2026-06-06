@@ -10,7 +10,7 @@ import {
 import { useToast } from "@/components/shared/toast";
 import { ProgressBar } from "@/components/shared/progress-bar";
 import { EmptyState } from "@/components/shared/empty-state";
-import { validateOrders, checkExternalCodeDuplicates } from "@/lib/validators";
+import { validateOrders, checkExternalCodeDuplicates, checkReceiverConsistency } from "@/lib/validators";
 import { submitOrders, getExistingExternalCodes } from "@/lib/server-actions";
 import { generateId } from "@/lib/utils";
 import * as XLSX from "xlsx";
@@ -86,7 +86,8 @@ export default function PreviewPage() {
     const t = setTimeout(() => {
       const ve = validateOrders(rows);
       const de = checkExternalCodeDuplicates(rows, existingCodes);
-      setErrors([...ve, ...de]);
+      const ce = checkReceiverConsistency(rows);
+      setErrors([...ve, ...de, ...ce]);
     }, 150);
     return () => clearTimeout(t);
   }, [rows, existingCodes]);
@@ -178,8 +179,9 @@ export default function PreviewPage() {
   const handleSubmit = useCallback(async () => {
     const ve = validateOrders(rows);
     const de = checkExternalCodeDuplicates(rows, existingCodes);
-    if (ve.length + de.length > 0) {
-      showToast(`存在 ${ve.length + de.length} 个校验错误，请修正后重试`, "error");
+    const ce = checkReceiverConsistency(rows);
+    if (ve.length + de.length + ce.length > 0) {
+      showToast(`存在 ${ve.length + de.length + ce.length} 个校验错误，请修正后重试`, "error");
       return;
     }
 
