@@ -48,6 +48,7 @@ export default function PreviewPage() {
   const [fileName, setFileName] = useState("");
   const [ruleName, setRuleName] = useState("");
   const [parseDuration, setParseDuration] = useState(0);
+  const [isTestParse, setIsTestParse] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitResult, setSubmitResult] = useState<SubmitResult | null>(null);
   const [submitProgress, setSubmitProgress] = useState({ current: 0, total: 0, percent: 0 });
@@ -70,6 +71,7 @@ export default function PreviewPage() {
     setFileName(data.fileName || "");
     setRuleName(data.ruleName || "");
     setParseDuration(data.parseDuration || 0);
+    setIsTestParse(!!data.isTestParse);
   }, [router]);
 
   // 进页时按当前外部编码查一次数据库已存在编码（避免每次编辑全表拉取）
@@ -243,10 +245,13 @@ export default function PreviewPage() {
       {/* 顶部信息栏 */}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <button onClick={() => router.push("/")} className="btn-ghost mb-2 gap-1">
-            <ArrowLeft className="h-4 w-4" />返回
+          <button onClick={() => { if (isTestParse) window.close(); else router.push("/"); }} className="btn-ghost mb-2 gap-1">
+            <ArrowLeft className="h-4 w-4" />{isTestParse ? "关闭预览" : "返回"}
           </button>
-          <h1 className="text-xl font-bold text-[#1d2129]">数据预览与编辑</h1>
+          <h1 className="text-xl font-bold text-[#1d2129]">
+            数据预览与编辑
+            {isTestParse && <span className="tag tag-orange ml-2 align-middle text-xs">试解析 · 只读测试</span>}
+          </h1>
           <p className="text-xs text-[#86909c]">
             文件：{fileName} | 规则：{ruleName} | 解析耗时：{parseDuration}ms | 共 {rows.length} 条记录
             {totalErrorRows > 0 && (
@@ -263,13 +268,15 @@ export default function PreviewPage() {
           <button onClick={handleExport} className="btn-outline gap-1 text-sm">
             <Download className="h-4 w-4" />导出Excel
           </button>
-          <button
-            onClick={handleSubmit}
-            disabled={submitting || totalErrorRows > 0}
-            className="btn-primary gap-1.5 text-sm"
-          >
-            {submitting ? (<><Loader2 className="h-4 w-4 animate-spin" />提交中...</>) : (<><Upload className="h-4 w-4" />提交下单</>)}
-          </button>
+          {!isTestParse && (
+            <button
+              onClick={handleSubmit}
+              disabled={submitting || totalErrorRows > 0}
+              className="btn-primary gap-1.5 text-sm"
+            >
+              {submitting ? (<><Loader2 className="h-4 w-4 animate-spin" />提交中...</>) : (<><Upload className="h-4 w-4" />提交下单</>)}
+            </button>
+          )}
         </div>
       </div>
 

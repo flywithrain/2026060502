@@ -40,6 +40,7 @@ function RuleEditor({
           fileName: `[试解析] ${fileName}`,
           ruleName: rule.name || "未命名规则",
           parseDuration: 0,
+          isTestParse: true,
         })
       );
       window.open("/preview", "_blank");
