@@ -8,7 +8,7 @@ import { ProgressBar } from "@/components/shared/progress-bar";
 import { useToast } from "@/components/shared/toast";
 import { readFile } from "@/lib/file-reader";
 import { parseFile } from "@/lib/parse-engine";
-import { validateOrders, checkExternalCodeDuplicates } from "@/lib/validators";
+import { validateOrders, checkExternalCodeDuplicates, checkReceiverConsistency } from "@/lib/validators";
 import { getAllRules, getExistingExternalCodes } from "@/lib/server-actions";
 import type { ParsedFile, ParseRule, OrderRow, ParseProgress } from "@/types";
 import { Sparkles, FileText, ArrowRight, Database } from "lucide-react";
@@ -54,51 +54,43 @@ export default function HomePage() {
     if (!parsedFile) return;
     setSelectedRule(rule);
     setLoading(true);
-    setProgress({ current: 0, total: parsedFile.rows.length, percent: 0, status: "parsing" });
+    const tick = () => new Promise((r) => setTimeout(r, 0));
 
-    // 在下一tick执行，让UI更新
-    await new Promise((r) => setTimeout(r, 50));
-
+    // 阶段1：解析
+    setProgress({ current: 0, total: parsedFile.rows.length, percent: 15, status: "parsing" });
+    await tick();
     const startTime = performance.now();
     const orderRows = parseFile(parsedFile, rule);
     const duration = performance.now() - startTime;
 
-    // 校验
+    // 阶段2：本地校验
+    setProgress({ current: orderRows.length, total: orderRows.length, percent: 60, status: "parsing" });
+    await tick();
     const validationErrors = validateOrders(orderRows);
-    const existingCodes = await getExistingExternalCodes().catch(() => new Set<string>());
+    const consistencyErrors = checkReceiverConsistency(orderRows);
+
+    // 阶段3：数据库重复检测（仅查本批涉及的编码）
+    setProgress({ current: orderRows.length, total: orderRows.length, percent: 85, status: "parsing" });
+    const codes = Array.from(new Set(orderRows.map((r) => r.externalCode?.trim()).filter(Boolean) as string[]));
+    const existingCodes = await getExistingExternalCodes(codes).catch(() => new Set<string>());
     const dupErrors = checkExternalCodeDuplicates(orderRows, existingCodes);
+    const allErrors = [...validationErrors, ...consistencyErrors, ...dupErrors];
 
-    // 合并错误
-    for (const dupErr of dupErrors) {
-      const row = orderRows.find((r) => r.rowIndex === dupErr.rowIndex);
-      if (row) {
-        if (!row._errors) row._errors = [];
-        row._errors.push(dupErr);
-      }
-    }
-    for (const vErr of validationErrors) {
-      const row = orderRows.find((r) => r.rowIndex === vErr.rowIndex);
-      if (row) {
-        if (!row._errors) row._errors = [];
-        row._errors.push(vErr);
-      }
-    }
-
+    // 完成
     setProgress({ current: orderRows.length, total: orderRows.length, percent: 100, status: "done" });
 
-    // 存储到 sessionStorage 供预览页使用
     sessionStorage.setItem(
       "previewData",
       JSON.stringify({
         rows: orderRows,
-        errors: validationErrors,
+        errors: allErrors,
         fileName: parsedFile.fileName,
         ruleName: rule.name,
         parseDuration: Math.round(duration),
       })
     );
 
-    showToast(`解析完成：${orderRows.length}条记录，${validationErrors.length + dupErrors.length}处错误`, "success");
+    showToast(`解析完成：${orderRows.length} 条记录，${allErrors.length} 处错误`, allErrors.length ? "info" : "success");
     setLoading(false);
 
     router.push("/preview");

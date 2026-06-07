@@ -241,7 +241,7 @@ export default function PreviewPage() {
   return (
     <div className="mx-auto max-w-full px-4 py-8">
       {/* 顶部信息栏 */}
-      <div className="mb-4 flex items-center justify-between">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div>
           <button onClick={() => router.push("/")} className="btn-ghost mb-2 gap-1">
             <ArrowLeft className="h-4 w-4" />返回
@@ -256,7 +256,7 @@ export default function PreviewPage() {
             )}
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
           <button onClick={handleAddRow} className="btn-outline gap-1 text-sm">
             <Plus className="h-4 w-4" />新增行
           </button>

@@ -65,6 +65,18 @@ export default function OrdersPage() {
     setDetailRows(null);
   }, []);
 
+  // 详情弹窗：ESC 关闭 + 锁定背景滚动
+  useEffect(() => {
+    if (!detailShipment) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") closeDetail(); };
+    document.addEventListener("keydown", onKey);
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = "";
+    };
+  }, [detailShipment, closeDetail]);
+
   const formatDate = (d?: string | Date | null) => {
     if (!d) return "-";
     return new Date(d).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });

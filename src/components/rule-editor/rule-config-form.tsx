@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { Plus, ChevronDown, ChevronRight } from "lucide-react";
+import { Plus, ChevronDown, ChevronRight, CheckCircle, AlertCircle, HelpCircle } from "lucide-react";
 import type {
   ParseRuleDraft, FieldMapping, KvEntry, KvExtractConfig,
   ExcelConfig, MatrixConfig, CardConfig, AggregateConfig, PdfConfig,
@@ -37,6 +37,22 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       <label className="mb-1 block text-xs font-medium text-[#86909c]">{label}</label>
       {children}
     </div>
+  );
+}
+
+// AI 置信度标签：标注哪些映射是 AI 推测的
+const CONFIDENCE_META: Record<string, { cls: string; Icon: typeof CheckCircle; label: string }> = {
+  high: { cls: "tag-green", Icon: CheckCircle, label: "高" },
+  medium: { cls: "tag-orange", Icon: AlertCircle, label: "中" },
+  low: { cls: "tag-red", Icon: HelpCircle, label: "低" },
+};
+function ConfidenceTag({ level }: { level?: "high" | "medium" | "low" }) {
+  if (!level) return <span className="text-xs text-[#c9cdd4]">—</span>;
+  const m = CONFIDENCE_META[level];
+  return (
+    <span className={`tag ${m.cls} text-[11px]`}>
+      <m.Icon className="mr-0.5 h-3 w-3" />{m.label}
+    </span>
   );
 }
 
@@ -226,7 +242,7 @@ export function RuleConfigForm({
           ) : (
             <div className="table-wrapper">
               <table className="table-styled">
-                <thead><tr><th style={{ width: 90 }}>列号(0起)</th><th>目标字段</th><th style={{ width: 60 }}>操作</th></tr></thead>
+                <thead><tr><th style={{ width: 90 }}>列号(0起)</th><th>目标字段</th><th style={{ width: 80 }}>AI置信度</th><th style={{ width: 60 }}>操作</th></tr></thead>
                 <tbody>
                   {rule.fieldMappings.map((m, i) => (
                     <tr key={i}>
@@ -236,6 +252,7 @@ export function RuleConfigForm({
                           {TARGET_FIELDS.map((f) => <option key={f} value={f}>{FIELD_LABELS[f]}</option>)}
                         </select>
                       </td>
+                      <td className="text-center"><ConfidenceTag level={m.aiConfidence} /></td>
                       <td><button type="button" onClick={() => delMapping(i)} className="btn-ghost text-xs text-[#cf1322]">删除</button></td>
                     </tr>
                   ))}
@@ -258,11 +275,12 @@ export function RuleConfigForm({
           <button type="button" onClick={addMtxMapping} className="btn-outline gap-1 text-xs mb-2"><Plus className="h-3 w-3" />添加</button>
           {mtxMappings.length === 0 ? <p className="py-3 text-center text-xs text-[#86909c]">暂无</p> : (
             <div className="table-wrapper"><table className="table-styled text-xs">
-              <thead><tr><th style={{ width: 80 }}>列(0起)</th><th>字段</th><th style={{ width: 50 }}></th></tr></thead>
+              <thead><tr><th style={{ width: 80 }}>列(0起)</th><th>字段</th><th style={{ width: 70 }}>置信度</th><th style={{ width: 50 }}></th></tr></thead>
               <tbody>{mtxMappings.map((m, i) => (
                 <tr key={i}>
                   <td><input type="number" className="input-field w-20 text-center text-xs" value={m.fromCol} onChange={(e) => updMtxMapping(i, "fromCol", Number(e.target.value))} min={0} /></td>
                   <td><select className="input-field text-xs" value={m.toField} onChange={(e) => updMtxMapping(i, "toField", e.target.value)}>{TARGET_FIELDS.map((f) => <option key={f} value={f}>{FIELD_LABELS[f]}</option>)}</select></td>
+                  <td className="text-center"><ConfidenceTag level={m.aiConfidence} /></td>
                   <td><button type="button" onClick={() => delMtxMapping(i)} className="btn-ghost text-xs text-[#cf1322]">删除</button></td>
                 </tr>
               ))}</tbody>
@@ -298,11 +316,12 @@ export function RuleConfigForm({
             <button type="button" onClick={addCardDataMapping} className="btn-outline gap-1 text-xs mb-2"><Plus className="h-3 w-3" />添加</button>
             {cardDataMappings.length === 0 ? <p className="py-3 text-center text-xs text-[#86909c]">暂无</p> : (
               <div className="table-wrapper"><table className="table-styled text-xs">
-                <thead><tr><th style={{ width: 80 }}>列(0起)</th><th>字段</th><th style={{ width: 50 }}></th></tr></thead>
+                <thead><tr><th style={{ width: 80 }}>列(0起)</th><th>字段</th><th style={{ width: 70 }}>置信度</th><th style={{ width: 50 }}></th></tr></thead>
                 <tbody>{cardDataMappings.map((m, i) => (
                   <tr key={i}>
                     <td><input type="number" className="input-field w-20 text-center text-xs" value={m.fromCol} onChange={(e) => updCardDataMapping(i, "fromCol", Number(e.target.value))} min={0} /></td>
                     <td><select className="input-field text-xs" value={m.toField} onChange={(e) => updCardDataMapping(i, "toField", e.target.value)}>{TARGET_FIELDS.map((f) => <option key={f} value={f}>{FIELD_LABELS[f]}</option>)}</select></td>
+                    <td className="text-center"><ConfidenceTag level={m.aiConfidence} /></td>
                     <td><button type="button" onClick={() => delCardDataMapping(i)} className="btn-ghost text-xs text-[#cf1322]">删除</button></td>
                   </tr>
                 ))}</tbody>
