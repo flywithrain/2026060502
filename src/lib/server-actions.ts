@@ -79,10 +79,6 @@ export async function submitOrders(
   orderRows: SubmitRow[],
   batchId: string
 ): Promise<{ success: number; failed: number; errors: { rowIndex: number; message: string }[] }> {
-  let success = 0;
-  let failed = 0;
-  const errors: { rowIndex: number; message: string }[] = [];
-
   // 分组：有外编码按编码聚合，无编码每行独立
   const groups = new Map<string, SubmitRow[]>();
   orderRows.forEach((row, idx) => {
@@ -91,6 +87,10 @@ export async function submitOrders(
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key)!.push(row);
   });
+
+  // 预构建所有 shipment + order 数据
+  const shipmentRows: (typeof shipments.$inferInsert)[] = [];
+  const orderRowsAll: (typeof orders.$inferInsert)[] = [];
 
   for (const group of groups.values()) {
     const shipmentId = generateId();
@@ -104,37 +104,64 @@ export async function submitOrders(
     };
     const totalQty = group.reduce((s, r) => s + (Number(r.skuQuantity) || 0), 0);
 
-    try {
-      await db.insert(shipments).values({
-        id: shipmentId,
-        externalCode: code,
-        storeName: pick("storeName"),
-        receiverName: pick("receiverName"),
-        receiverPhone: pick("receiverPhone"),
-        receiverAddress: pick("receiverAddress"),
-        remark: pick("remark"),
-        skuCount: group.length,
-        totalQuantity: String(totalQty),
-        batchId,
-      });
+    shipmentRows.push({
+      id: shipmentId,
+      externalCode: code,
+      storeName: pick("storeName"),
+      receiverName: pick("receiverName"),
+      receiverPhone: pick("receiverPhone"),
+      receiverAddress: pick("receiverAddress"),
+      remark: pick("remark"),
+      skuCount: group.length,
+      totalQuantity: String(totalQty),
+      batchId,
+    });
 
-      const items = group.map((r) => ({
+    for (const r of group) {
+      orderRowsAll.push({
         shipmentId,
         skuCode: r.skuCode,
         skuName: r.skuName,
         skuQuantity: String(r.skuQuantity),
         skuSpec: r.skuSpec || null,
         remark: r.remark || null,
-      }));
-      const BATCH = 200;
-      for (let i = 0; i < items.length; i += BATCH) {
-        await db.insert(orders).values(items.slice(i, i + BATCH));
-      }
-      success += group.length;
-    } catch (e) {
-      failed += group.length;
-      errors.push({ rowIndex: -1, message: `单据 ${code || "(无编码)"} 写入失败：${e instanceof Error ? e.message : String(e)}` });
+      });
     }
+  }
+
+  // 批量插入：shipments 和 orders 分批并发
+  const SHIPMENT_BATCH = 100;
+  const ORDER_BATCH = 500;
+
+  const shipmentBatches: Promise<typeof shipments.$inferSelect[]>[] = [];
+  for (let i = 0; i < shipmentRows.length; i += SHIPMENT_BATCH) {
+    shipmentBatches.push(db.insert(shipments).values(shipmentRows.slice(i, i + SHIPMENT_BATCH)).returning());
+  }
+
+  const orderBatches: Promise<typeof orders.$inferSelect[]>[] = [];
+  for (let i = 0; i < orderRowsAll.length; i += ORDER_BATCH) {
+    orderBatches.push(db.insert(orders).values(orderRowsAll.slice(i, i + ORDER_BATCH)).returning());
+  }
+
+  // 先插 shipments（主表），再插 orders（子表，有外键依赖）
+  let success = 0;
+  let failed = 0;
+  const errors: { rowIndex: number; message: string }[] = [];
+
+  try {
+    await Promise.all(shipmentBatches);
+  } catch (e) {
+    failed += orderRows.length;
+    errors.push({ rowIndex: -1, message: `主表写入失败：${e instanceof Error ? e.message : String(e)}` });
+    return { success, failed, errors };
+  }
+
+  try {
+    await Promise.all(orderBatches);
+    success = orderRows.length;
+  } catch (e) {
+    failed += orderRows.length;
+    errors.push({ rowIndex: -1, message: `明细表写入失败：${e instanceof Error ? e.message : String(e)}` });
   }
 
   return { success, failed, errors };
